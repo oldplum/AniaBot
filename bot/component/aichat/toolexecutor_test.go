@@ -2,6 +2,7 @@ package aichat
 
 import (
 	"context"
+<<<<<<< HEAD
 	"errors"
 	"fmt"
 	"net/http"
@@ -247,5 +248,66 @@ func TestStreamToolRoundBoundary(t *testing.T) {
 	}
 	if sendTextCalls.Load() != 0 {
 		t.Fatalf("流式模式下不应调用 SendText, got %d", sendTextCalls.Load())
+	}
+}
+
+func TestHasImageContent(t *testing.T) {
+	textMsg := Message{
+		Role:  RoleUser,
+		Parts: []ContentPart{TextPart("hello")},
+	}
+	imageMsg := Message{
+		Role:  RoleUser,
+		Parts: []ContentPart{TextPart("check this"), ImageURLPart("http://example.com/test.png")},
+	}
+
+	if hasImageContent([]Message{textMsg}) {
+		t.Error("expected false for text-only messages, got true")
+	}
+
+	if !hasImageContent([]Message{textMsg, imageMsg}) {
+		t.Error("expected true for messages containing image, got false")
+	}
+}
+
+func TestConvertImagesToOCR(t *testing.T) {
+	msgs := []Message{
+		{
+			Role: RoleUser,
+			Parts: []ContentPart{
+				TextPart("图中的文字是什么？"),
+				ImageURLPart("http://example.com/ocr.png"),
+			},
+		},
+	}
+
+	mockDescribe := func(ctx context.Context, imageURL string) (string, error) {
+		return "图片描述：测试图片包含 Hello World 文字", nil
+	}
+
+	converted, err := convertImagesToOCR(context.Background(), msgs, mockDescribe)
+	if err != nil {
+		t.Fatalf("convertImagesToOCR err = %v", err)
+	}
+
+	if len(converted) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(converted))
+	}
+
+	parts := converted[0].Parts
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+
+	if parts[0].Type != ContentPartText || parts[0].Text != "图中的文字是什么？" {
+		t.Errorf("part 0 unchanged text failed: %+v", parts[0])
+	}
+
+	if parts[1].Type != ContentPartText {
+		t.Errorf("expected part 1 to be converted to TextPart, got type %v", parts[1].Type)
+	}
+
+	if !strings.Contains(parts[1].Text, "Hello World") {
+		t.Errorf("expected converted text to contain OCR description, got %q", parts[1].Text)
 	}
 }

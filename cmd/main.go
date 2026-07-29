@@ -12,6 +12,8 @@ import (
 	"github.com/jeanhua/AniaBot/bot/core"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginaichat"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginantiwithdrawal"
+	"github.com/jeanhua/AniaBot/bot/plugins/plugineew"
+	"github.com/jeanhua/AniaBot/bot/plugins/pluginforward"
 	"github.com/jeanhua/AniaBot/bot/plugins/plugininterceptor"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginlog"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginnews"
@@ -43,8 +45,11 @@ func main() {
 	bot.AddPlugin(pluginrepeat.NewPlugin())
 	bot.AddPlugin(pluginantiwithdrawal.NewPlugin())
 	bot.AddPlugin(pluginnews.NewNewsPlugin())
-
 	bot.AddPlugin(pluginaichat.NewAIChatPlugin())
+	bot.AddPlugin(plugineew.NewPlugin())
+	if pluginforward.NewPlugin() != nil {
+		bot.AddPlugin(pluginforward.NewPlugin())
+	}
 
 	bot.Run()
 }

@@ -807,6 +807,13 @@ func (m *clockManager) makeClockCallback(ctx context.Context, task *ClockTask) l
 			return p.loadLocalImageInto(ctx, path, &loadedImages), nil
 		}
 	}
+	if m.plugin.ocrModel != nil {
+		p := m.plugin
+		cbs.DescribeImage = func(ctx context.Context, imageURL string) (string, error) {
+			dataURI := fetchImageAsDataURI(ctx, imageURL)
+			return p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
+		}
+	}
 	return cbs
 }
 

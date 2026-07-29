@@ -235,6 +235,7 @@ func (p *AIChatPlugin) makeSubagentCallbacks(ctx context.Context, parent llmtool
 		SendFile:          parent.SendFile,
 		GetMsgHistory:     parent.GetMsgHistory,
 		GetPrivateFileURL: parent.GetPrivateFileURL,
+		DescribeImage:     parent.DescribeImage,
 		// 用户消息图片的加载状态属于主请求；子代理确需查看时在结果中说明，由主 AI 自行加载
 		LoadImages: func() (string, error) {
 			return "子代理无法直接加载用户消息中的图片；如确需查看，请在最终结果中说明，由主 AI 自行调用 load_images", nil

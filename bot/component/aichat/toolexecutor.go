@@ -3,6 +3,7 @@ package aichat
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -52,6 +53,81 @@ func (o *ToolOrchestrator) SetToolObserver(fn func(ToolCallInfo)) {
 	o.toolObserver = fn
 }
 
+func (o *ToolOrchestrator) generateWithFallback(
+	ctx context.Context,
+	llmClient *LLMClient,
+	messages []Message,
+	callbacks llmtool.CallBackFuncs,
+	opts ChatOptions,
+	gen func(context.Context, []Message, ChatOptions) (GenerateResponse, TokenUsage, error),
+) (GenerateResponse, TokenUsage, []Message, error) {
+	resp, usage, err := gen(ctx, messages, opts)
+	if err == nil {
+		return resp, usage, messages, nil
+	}
+
+	if callbacks.DescribeImage == nil || !hasImageContent(messages) {
+		return resp, usage, messages, err
+	}
+
+	slog.Warn("主模型生成失败，检测到消息中包含图片，尝试使用 OCR 备用模型转述图片重试", "error", err.Error())
+
+	fallbackMsgs, fallbackErr := convertImagesToOCR(ctx, messages, callbacks.DescribeImage)
+	if fallbackErr != nil {
+		slog.Error("OCR 备用模型转述图片失败", "error", fallbackErr.Error())
+		return resp, usage, messages, err
+	}
+
+	retryResp, retryUsage, retryErr := gen(ctx, fallbackMsgs, opts)
+	if retryErr != nil {
+		slog.Error("使用 OCR 描述图片重试生成依然失败", "error", retryErr.Error())
+		return resp, usage, messages, err
+	}
+
+	slog.Info("主模型生成自动降级为 OCR 描述文本后重试成功")
+	return retryResp, retryUsage, fallbackMsgs, nil
+}
+
+func hasImageContent(messages []Message) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if part.Type == ContentPartImageURL && part.ImageURL != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func convertImagesToOCR(
+	ctx context.Context,
+	messages []Message,
+	describeFn func(ctx context.Context, imageURL string) (string, error),
+) ([]Message, error) {
+	newMessages := make([]Message, len(messages))
+	for i, msg := range messages {
+		newMsg := msg
+		if len(msg.Parts) > 0 {
+			newParts := make([]ContentPart, 0, len(msg.Parts))
+			for _, part := range msg.Parts {
+				if part.Type == ContentPartImageURL && part.ImageURL != "" {
+					desc, err := describeFn(ctx, part.ImageURL)
+					if err != nil {
+						newParts = append(newParts, TextPart(fmt.Sprintf("\n<图片识别失败: %v>\n", err)))
+					} else {
+						newParts = append(newParts, TextPart(fmt.Sprintf("\n<主模型降级使用备用识别模型的图片描述>\n%s\n</图片描述>\n", desc)))
+					}
+				} else {
+					newParts = append(newParts, part)
+				}
+			}
+			newMsg.Parts = newParts
+		}
+		newMessages[i] = newMsg
+	}
+	return newMessages, nil
+}
+
 type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
@@ -87,7 +163,8 @@ func (o *ToolOrchestrator) ExecuteWithTools(
 	}
 
 	if o.executor == nil || len(o.executor.Tools()) == 0 {
-		resp, usage, err := gen(ctx, messages, opts)
+		resp, usage, updatedMsgs, err := o.generateWithFallback(ctx, llmClient, messages, callbacks, opts, gen)
+		messages = updatedMsgs
 		if err != nil {
 			return "", messages, totalUsage, err
 		}
@@ -103,7 +180,8 @@ func (o *ToolOrchestrator) ExecuteWithTools(
 		tools := o.executor.Tools()
 
 		opts.Tools = tools
-		resp, usage, err := gen(ctx, messages, opts)
+		resp, usage, updatedMsgs, err := o.generateWithFallback(ctx, llmClient, messages, callbacks, opts, gen)
+		messages = updatedMsgs
 		if err != nil {
 			return "", messages, totalUsage, err
 		}
@@ -150,7 +228,8 @@ func (o *ToolOrchestrator) ExecuteWithTools(
 			// 否则模型可能继续发起工具调用而被静默丢弃（仅取 Content），导致空响应
 			finalOpts := opts
 			finalOpts.Tools = nil
-			finalResp, finalUsage, err := gen(ctx, messages, finalOpts)
+			finalResp, finalUsage, updatedMsgs, err := o.generateWithFallback(ctx, llmClient, messages, callbacks, finalOpts, gen)
+			messages = updatedMsgs
 			if err != nil {
 				return "", messages, totalUsage, err
 			}
