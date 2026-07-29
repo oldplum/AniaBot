@@ -43,7 +43,7 @@ func NewPlugin() *EEWPlugin {
 			HelpWords: "地震预警实时推送及防灾查询。发送 /eew 或 /地震 获取最新地震目录，发送 /weather 或 /天气 获取全国气象排行，发送 /eew status 查看状态",
 			Order:     plugin.LevelNormal,
 			ShowFor:   plugininfo.ShowForGroup | plugininfo.ShowForFriend,
-			Author:    "jeanhua",
+			Author:    "oldplum",
 			Version:   "1.2.0",
 		},
 	}
