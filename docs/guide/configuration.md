@@ -59,15 +59,41 @@ AniaBot 的全部配置存储在**数据库**中（持久化存储的 `ania_kv` 
 
 ### platform —— 平台适配器开关
 
-多平台并存，各自独立开关（`bot.platform.<name>.enable`）。默认仅启用 QQ，飞书 / Telegram 默认关闭：
+多平台并存，各自独立开关（`bot.platform.<name>.enable`）。默认仅启用 QQ，QQ 官方 / 飞书 / Telegram / Discord 默认关闭：
 
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `bot.platform.napcat.enable` | `true` | 是否启用 QQ（NapCat）平台 |
+| `bot.platform.qqofficial.enable` | `false` | 是否启用 QQ 官方机器人平台（需同时配置下方 `bot.qqofficial.*`） |
 | `bot.platform.feishu.enable` | `false` | 是否启用飞书平台（需同时配置下方 `bot.feishu.*`） |
 | `bot.platform.telegram.enable` | `false` | 是否启用 Telegram 平台（需同时配置下方 `bot.telegram.*`） |
+| `bot.platform.discord.enable` | `false` | 是否启用 Discord 平台（需同时配置下方 `bot.discord.*`） |
 
 勾选后**重启生效**。未来新增平台同样在此出现对应开关。
+
+### qqofficial —— QQ 官方适配器
+
+在 [QQ 开放平台](https://q.qq.com/) 注册并创建机器人，在管理端「开发 → 开发设置」拿到 **AppID / AppSecret**，并在「功能配置」的事件订阅中选择 **WebSocket 方式**、勾选群聊（@机器人）与单聊场景，然后在面板勾选启用 QQ 官方并填写。事件经官方 WebSocket 网关推送，**无需公网地址、无需部署协议端**（旧版 Token 鉴权已废弃，AniaBot 使用 Access Token 鉴权并自动刷新）。群聊订阅默认仅在 @机器人 时推送（`GROUP_AT_MESSAGE_CREATE`）；若在后台开启「接收所有消息」，群内每条消息都会推送（`GROUP_MESSAGE_CREATE`），AniaBot 两种模式都支持：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `bot.qqofficial.app_id` | 空 | 机器人 AppID |
+| `bot.qqofficial.app_secret` | 空 | 机器人 AppSecret（敏感字段），用于换取 access_token |
+| `bot.qqofficial.sandbox` | `false` | 沙箱环境开关；机器人未上架前只能连接沙箱环境联调 |
+| `bot.qqofficial.api_base` | `https://api.sgroup.qq.com` | OpenAPI 地址（沙箱开关优先于此配置） |
+| `bot.qqofficial.markdown` | `false` | AI 文本回复以 Markdown 消息（msg_type=2）发送，富文本渲染；发送失败自动降级纯文本 |
+
+::: tip QQ 官方能做什么 / 不能做什么
+QQ 官方适配器覆盖**群聊 @机器人** 与 **单聊（C2C）** 两大场景：支持文本 / 图片 / 语音 / 视频 / 文件 / 引用回复，好友添加映射公共通知，机器人被拉群/移出/删除等走平台事件；入站消息自动注入 @机器人 的 at 段，群聊 @ 触发 AI 对话开箱即用。**平台限制**：
+- 发消息以**被动回复**为主（携带事件的 msg_id，群聊 5 分钟内最多 5 次、单聊 60 分钟内最多 4 次），超限自动降级主动消息（受官方频控与每日配额限制）
+- **不能 @ 群成员**（无对应 API），回复语义以「引用消息」表达（无显式 reply 段时自动引用触发消息，客户端显示为引用气泡）
+- 无消息历史 / 单条消息查询 / 群资料 API：历史仅覆盖适配器运行期间的内存缓存（AI 会话历史不受影响，由持久化存储承载）
+- 无消息编辑 API：不支持流式回复（自动退化一次性发送）
+- 媒体（图片/视频/语音/文件）先经 `/files` 上传换取 file_info 再发送，URL 直传与本地字节分片上传都支持
+- openid 为 per-AppID 身份：同一用户在群聊（member_openid）与单聊（user_openid）下 ID 不同，且与 NapCat 的数字 QQ 号完全无关
+- 开启「接收所有消息」（全量模式）后，群内非 @ 消息也会像 NapCat 一样流经插件链（词云、计数、消息清理等插件可正常工作），AI 仍然只在被 @ 时响应；机器人自己发送的消息会被自动过滤，防止自我循环；消息正文中残留的 `<@openid>` 提及标记会自动剥离，不会污染 AI 输入
+- 频道（guild）场景不在支持范围；合并转发、戳一戳、群签到、rkey 等 NapCat 专属能力 QQ 官方**没有**——依赖它们的插件（如防撤回）在本平台不生效
+:::
 
 ### feishu —— 飞书适配器
 
@@ -100,6 +126,24 @@ AniaBot 的全部配置存储在**数据库**中（持久化存储的 `ania_kv` 
 
 ::: tip Telegram 能做什么 / 不能做什么
 Telegram 适配器支持文本 / @提及 / 图片 / 文件 / 语音 / 视频 / 回复，成员进出、表情回应、机器人被拉群/移出会映射到对应公共通知与平台事件；群聊中 @机器人 触发 AI 对话。**平台限制**：@ 只能以 `@username` 形式（无按 ID @ 的 API）；仅当机器人是管理员或关闭隐私模式时才能收到其他成员的加入/离开消息与表情回应；Bot API 无消息历史端点，历史消息仅覆盖适配器运行期间的缓存（AI 会话历史不受影响，由持久化存储承载）；消息撤回、合并转发等 QQ 专属能力 Telegram **没有**。
+:::
+
+### discord —— Discord 适配器
+
+在 [Discord Developer Portal](https://discord.com/developers/applications) 创建应用，在「Bot」页面获取 **Bot Token**，并**务必开启「Message Content Intent」**（特权意图，否则网关拒绝连接）；邀请机器人进服务器时使用 `bot` scope 并勾选 Send Messages / Read Message History / Add Reactions / Attach Files 等权限。然后在面板勾选启用 Discord 并填写。事件经 Gateway WebSocket 推送，**无需公网地址、无需部署协议端**：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `bot.discord.token` | 空 | Bot Token（敏感字段），重置后旧 Token 立即失效 |
+| `bot.discord.proxy` | 空 | HTTP/SOCKS5 代理（`http://host:port` 或 `socks5://host:port`），留空直连；REST 与 WebSocket 网关都走代理 |
+| `bot.discord.member_events` | `false` | 接收服务器成员进出事件；需在 Developer Portal 同步开启 Server Members Intent，成员进出以平台事件投递 |
+
+::: tip Discord 能做什么 / 不能做什么
+Discord 适配器支持文本 / @提及 / @everyone / 图片 / 文件 / 语音 / 视频 / 引用回复（原生渲染 Markdown），消息删除映射撤回公共通知、表情回应映射群消息表情回应通知；机器人进/出服务器与成员进出走平台事件（`discord.bot_added` / `discord.bot_removed` / `discord.guild_member_add` / `discord.guild_member_remove`）；群聊中 @机器人 触发 AI 对话；历史消息经官方 API 拉取（单次最多 100 条，内存缓存兜底）。**平台限制**：
+- Message Content 为特权意图，必须在 Developer Portal 开启，否则网关拒绝连接（close 4014）
+- 附件超过约 25 MiB 无法上传（超限附件跳过不发送）；外部 URL 附件由 Bot 下载后重传（Discord 不抓取外链）
+- 消息删除事件不携带删除者与原消息作者（作者仅从运行期缓存反查）；成员进出事件携带服务器 ID 而非频道 ID，因此映射为平台事件而非公共进出通知
+- 斜杠命令（Interactions）、合并转发、戳一戳等不在支持范围；QQ 专属能力（防撤回依赖的合并转发等）在本平台不生效
 :::
 
 ### adapter —— QQ(NapCat) 协议适配器
