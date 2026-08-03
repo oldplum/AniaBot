@@ -2,7 +2,6 @@ package aichat
 
 import (
 	"context"
-<<<<<<< HEAD
 	"errors"
 	"fmt"
 	"net/http"

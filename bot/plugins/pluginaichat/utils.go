@@ -140,7 +140,11 @@ func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot,
 	if p.ocrModel != nil {
 		callbacks.DescribeImage = func(ctx context.Context, imageURL string) (string, error) {
 			dataURI := fetchImageAsDataURI(ctx, imageURL)
-			return p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
+			desc, usage, err := p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
+			if usageSink != nil {
+				usageSink(usage)
+			}
+			return desc, err
 		}
 	}
 
