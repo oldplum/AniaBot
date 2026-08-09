@@ -177,6 +177,7 @@ All SQL backends use pure-Go drivers (`modernc.org/sqlite`, `github.com/go-sql-d
 - **Generics**: Used for `BaseTool[T]`, `MessageQueue[T]`, `safeExecuteWithReturn[T]`
 - **Functional options**: `Option func(*AniaBot)` pattern for bot configuration
 - **OneBot v11**: All QQ message types use the OneBot v11 segment format (`OB11Segment`)
+- **Git Commit Co-Author**: AI Assistant / Bot identity is "李可可" (Li Keke). All commits should be co-authored by `oldplum` and `李可可` (`Co-authored-by: CocoLee929 <cocolee929@foxmail.com>`).
 - **Changelog**: Every code change (feature, fix, refactor) must be recorded in `CHANGELOG.md` as part of the same change — add entries under the current unreleased/next version section, following the existing format. Keep entries short and easy to understand: one line for what changed and what problem it solves, without implementation details
 
 ## CI/CD
