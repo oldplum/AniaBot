@@ -2,6 +2,7 @@ package pluginaichat
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,10 @@ type AIChatPlugin struct {
 	// cfg 插件配置，由框架在 Start 前自动填充（见 ConfigSchema）
 	cfg   aiChatConfig
 	chats sync.Map
+
+	// historyDB 对话历史的 SQL 后端连接（Start 时探测建表成功才赋值）；
+	// nil 表示回退 KV 历史存储（history: 命名空间整段 JSON）
+	historyDB *sql.DB
 
 	lockStorage storage.Storage
 	rateCh      chan struct{}
@@ -70,6 +75,11 @@ type AIChatPlugin struct {
 
 	// knowledgeManager 知识库管理器；为 nil 表示功能未启用
 	knowledgeManager *knowledgeManager
+
+	// embedder 知识库与记忆共享的语义向量计算器；为 nil 表示向量检索未启用。
+	// 注入路径用它对每条用户消息预算一次查询向量（EmbedOneCached），
+	// 复用于知识库与记忆的自动注入。
+	embedder *embedder
 
 	// teamManager Agent 团队管理器；为 nil 表示功能未启用
 	teamManager *teamManager
@@ -129,8 +139,8 @@ func (p *AIChatPlugin) OnGroupMsg(ctx context.Context, bot bot.Bot, cmd command.
 		p.noMentionMu.Unlock()
 
 		if needCheck {
-			if c, ok := p.chats.Load(sessionKey(msg.GroupId, true)); ok && c != nil {
-				chat := c.(*aichat.ChatBot)
+			if v, ok := p.chats.Load(sessionKey(msg.GroupId, true)); ok && v != nil {
+				chat := v.(*chatEntry).chat
 				// 与 mention 路径的 chat.Chat 共用 per-group 锁，避免自动清理与进行中的对话
 				// 并发访问 messageWindow.messages 及 SessionToolExecutor.sessionTools
 				// （并发 map 读写会触发不可恢复的 fatal error 导致整个进程崩溃）
@@ -183,8 +193,10 @@ func (p *AIChatPlugin) OnGroupMsg(ctx context.Context, bot bot.Bot, cmd command.
 			builder.Text("正在回复上一条消息，你的消息已排队，稍后回复你~")
 			bot.SendGroupMsg(msg.GroupId, builder.Build())
 		}
+		p.touchChat(sessionKey(msg.GroupId, true))
 		return true, nil
 	}
+	p.touchChat(sessionKey(msg.GroupId, true))
 	defer p.unLock(msg.GroupId, true)
 	defer p.clearActiveContext(msg.GroupId, true)
 	p.noMentionCount.Store(msg.GroupId, 0)
@@ -246,8 +258,10 @@ func (p *AIChatPlugin) OnFriendMsg(ctx context.Context, bot bot.Bot, cmd command
 			builder.Text("正在回复上一条消息，你的消息已排队，稍后回复你~")
 			bot.SendFriendMsg(msg.Sender.UserId, builder.Build())
 		}
+		p.touchChat(sessionKey(msg.Sender.UserId, false))
 		return true, nil
 	}
+	p.touchChat(sessionKey(msg.Sender.UserId, false))
 	defer p.unLock(msg.Sender.UserId, false)
 	defer p.clearActiveContext(msg.Sender.UserId, false)
 
@@ -398,14 +412,40 @@ func (p *AIChatPlugin) processChatBatch(ctx context.Context, b bot.Bot, id messa
 
 	recorder := p.beginQuery(chat, id, isGroup, batch, extraText)
 
-	// 知识库自动注入：对用户消息做轻量关键词检索，命中相关文档时把片段拼到
-	// 用户消息前作为参考上下文。注入在 beginQuery 之后，query 日志保留原始用户消息。
+	// 记忆/知识库检索须基于原始用户消息：下面的注入会改写 extraText
+	userText := extraText
+
+	// 自动注入的查询向量：启用向量检索时每轮对用户消息 embed 一次（带缓存
+	// 与 10s 短超时），知识库与记忆注入复用同一向量；失败为 nil，两处自动
+	// 退化为纯关键词检索。
+	var queryVec []float32
+	if p.embedder != nil && (p.cfg.Kb.AutoInject || p.cfg.Memory.AutoInject) {
+		queryVec = p.embedder.EmbedOneCached(ctx, userText)
+	}
+
+	// 知识库自动注入：对用户消息做检索（有向量时语义+关键词混合，否则纯
+	// 关键词），命中相关文档时把片段拼到用户消息前作为参考上下文。
+	// 注入在 beginQuery 之后，query 日志保留原始用户消息。
 	if p.knowledgeManager != nil && p.cfg.Kb.AutoInject {
 		kbScope := "f:" + id.String()
 		if isGroup {
 			kbScope = "g:" + id.String()
 		}
-		if injected := p.knowledgeManager.autoInject(kbScope, extraText, 30); injected != "" {
+		if injected := p.knowledgeManager.autoInject(kbScope, extraText, 30, queryVec); injected != "" {
+			extraText = injected + "\n\n" + extraText
+		}
+	}
+
+	// 长期记忆自动注入：按原始用户消息检索相关记忆（有向量时语义+关键词
+	// 混合，否则纯关键词），命中后拼到用户消息前（尾部注入：system 保持
+	// 不变，不影响上游前缀缓存；用户消息不落盘，注入内容不会污染持久化
+	// 历史）。与知识库注入叠加时记忆块在最前、知识库块居中、用户消息最后。
+	if p.memoryManager != nil && p.cfg.Memory.AutoInject {
+		memScope := "f:" + id.String()
+		if isGroup {
+			memScope = "g:" + id.String()
+		}
+		if injected := p.memoryManager.autoInject(memScope, userText, p.cfg.Memory.InjectMax, queryVec); injected != "" {
 			extraText = injected + "\n\n" + extraText
 		}
 	}
@@ -542,6 +582,13 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	if p.cfg.APIKey == "" {
 		return fmt.Errorf("%w: 未配置 API KEY（plugin.ai_chat_bot.api_key）", aniaerror.ParameterInitializeError)
 	}
+	switch p.cfg.APIFormat {
+	case "", aichat.APIFormatChatCompletions, aichat.APIFormatResponses, aichat.APIFormatAnthropic:
+	default:
+		return fmt.Errorf("%w: 未知 API 格式 %q（plugin.ai_chat_bot.api_format，可选 %s/%s/%s）",
+			aniaerror.ParameterInitializeError, p.cfg.APIFormat,
+			aichat.APIFormatChatCompletions, aichat.APIFormatResponses, aichat.APIFormatAnthropic)
+	}
 	if p.cfg.Prompt == "" {
 		p.Logger.Warn("未配置 Prompt，将使用预设的默认提示词")
 		p.cfg.Prompt = defaultPrompt
@@ -605,6 +652,13 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	if localImageConfig.Enable {
 		p.Logger.Info("已启用local_image工具（可读取宿主机本地图片供AI查看，请注意安全风险）")
 	}
+	memeConfig := functool.MemeConfig{
+		URL:      p.cfg.Meme.URL,
+		Key:      p.cfg.Meme.Key,
+		ListPath: p.cfg.Meme.ListPath,
+		ImgField: p.cfg.Meme.ImgField,
+		Num:      p.cfg.Meme.Num,
+	}
 	var err error
 	p.toolExecutor, p.skillManager, err = functool.CreateToolsWithSkill(
 		p.cfg.Search.Token,
@@ -613,10 +667,27 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 		bashConfig,
 		fileConfig,
 		localImageConfig,
+		memeConfig,
 		p.cfg.Skills,
+		p.cfg.MCP.LazyLoad,
 	)
 	if err != nil {
 		return fmt.Errorf("%w: 创建工具执行器失败: %w", aniaerror.ParameterInitializeError, err)
+	}
+
+	// 配置管理 / 重启工具（默认关闭，配置中心读写能力由 core 经 DI 注入）
+	if p.cfg.ConfigTool.Enable {
+		if p.ConfigEditor != nil {
+			p.toolExecutor.Register(functool.NewConfigGetTool(p.ConfigEditor))
+			p.toolExecutor.Register(functool.NewConfigSetTool(p.ConfigEditor))
+			p.Logger.Info("已启用配置管理工具（AI 可查看/修改框架配置，敏感字段掩码，修改重启后生效）")
+		} else {
+			p.Logger.Warn("配置管理工具不可用：配置中心未注入（持久化存储异常？）")
+		}
+	}
+	if p.cfg.ConfigTool.RestartEnable {
+		p.toolExecutor.Register(functool.NewRestartBotTool(p.Logger))
+		p.Logger.Info("已启用重启工具（AI 可重启 Bot 使配置修改生效）")
 	}
 	p.Logger.Info("工具执行器初始化完成")
 
@@ -642,6 +713,7 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 
 	// 语义向量计算器：知识库与长期记忆共享（复用 kb.embedding 配置）
 	embedder := p.buildKBEmbedder()
+	p.embedder = embedder
 
 	// AI 长期记忆：由 AI 通过 memory_save/search/forget 工具自行管理的跨会话记忆，
 	// 按群聊/好友 scope 隔离，持久化到 PersistentStorage（memory: 命名空间）。
@@ -709,6 +781,28 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 
 	// Query 日志：记录每次 AI 回复的完整执行过程（面板「Query 日志」页数据源）
 	p.initQueryLogger()
+
+	// 对话历史行级化：SQL 后端建表成功则按行存于 ania_chat_session/ania_chat_message
+	// （增量追加只插入新行，避免整段 JSON 反复全量重写）；探测或建表失败回退
+	// KV 历史存储（history: 命名空间整段 JSON），功能不缺失
+	if db, dialect, ok := storage.SQLBackend(p.PersistentStorage); ok {
+		if err := storage.EnsureTables(ctx, db, dialect, chatHistoryTables...); err != nil {
+			p.Logger.Error("创建对话历史表失败，回退 KV 历史存储", "error", err.Error())
+		} else {
+			p.historyDB = db
+			p.Logger.Info("对话历史使用行级存储", "dialect", dialect)
+		}
+	}
+
+	// 会话内存回收：闲置淘汰 + LRU 容量上限，防止活跃会话增多导致内存线性增长。
+	// 淘汰只丢弃内存对象，持久化历史保留，下次发言自动重建并回放
+	maxIdle := time.Duration(max(p.cfg.Session.MaxIdleMinutes, 0)) * time.Minute
+	maxSessions := max(p.cfg.Session.MaxSessions, 0)
+	if maxIdle > 0 || maxSessions > 0 {
+		p.startChatJanitor(maxIdle, maxSessions)
+		p.Logger.Info("已启用会话内存回收",
+			"max_idle_minutes", p.cfg.Session.MaxIdleMinutes, "max_sessions", maxSessions)
+	}
 
 	return nil
 }

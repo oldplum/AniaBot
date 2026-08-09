@@ -1,7 +1,7 @@
 // 自动更新：从配置的 git 源码目录拉取最新代码，拉依赖、构建前端、编译 Go，
 // 以「改名交换」方式替换运行中的二进制（Windows 不允许覆盖运行中的 exe，
 // 但允许重命名，故先编译为 AniaBot.update，再拷贝为 <exe>.new 做 rename 交换，
-// 旧二进制保留为 <exe>.old 以便手动回滚），最后复用 restartSelf 重启进程。
+// 旧二进制保留为 <exe>.old 以便手动回滚），最后复用 sysrestart.Self 重启进程。
 //
 // 任一阶段失败都会中止更新，并记录错误分类（环境/仓库/依赖/前端/编译/系统），
 // 前端轮询 GET /api/update/status 展示实时日志与失败原因。
@@ -18,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jeanhua/AniaBot/bot/component/oplog"
+	"github.com/jeanhua/AniaBot/bot/component/sysrestart"
 )
 
 // 更新流水线阶段
@@ -35,13 +38,14 @@ const (
 
 // updateState 更新任务的内存状态（同一时间只允许一个任务）。
 type updateState struct {
-	mu      sync.Mutex
-	running bool
-	phase   string
-	logs    []string
-	err     string
-	errKind string
-	buf     string // logWriter 的半行缓冲
+	mu         sync.Mutex
+	running    bool
+	restarting bool
+	phase      string
+	logs       []string
+	err        string
+	errKind    string
+	buf        string // logWriter 的半行缓冲
 }
 
 var upd = &updateState{}
@@ -71,10 +75,33 @@ func (u *updateState) fail(kind string, err error) {
 	u.mu.Unlock()
 }
 
+// tryBegin 尝试占用更新任务；已有更新在运行，或已完成但仍在重启窗口内时返回 false。
+func (u *updateState) tryBegin() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.running || u.restarting {
+		return false
+	}
+	u.running = true
+	u.phase = upPhaseEnv
+	u.logs = nil
+	u.err = ""
+	u.errKind = ""
+	u.buf = ""
+	return true
+}
+
 func (u *updateState) finish() {
 	u.mu.Lock()
 	u.running = false
 	u.phase = upPhaseDone
+	u.restarting = true
+	u.mu.Unlock()
+}
+
+func (u *updateState) clearRestarting() {
+	u.mu.Lock()
+	u.restarting = false
 	u.mu.Unlock()
 }
 
@@ -84,11 +111,12 @@ func (u *updateState) snapshot() map[string]any {
 	logs := make([]string, len(u.logs))
 	copy(logs, u.logs)
 	return map[string]any{
-		"running": u.running,
-		"phase":   u.phase,
-		"logs":    logs,
-		"error":   u.err,
-		"errKind": u.errKind,
+		"running":    u.running,
+		"restarting": u.restarting,
+		"phase":      u.phase,
+		"logs":       logs,
+		"error":      u.err,
+		"errKind":    u.errKind,
 	}
 }
 
@@ -111,7 +139,7 @@ func (w logWriter) Write(p []byte) (int, error) {
 // isDevRun 检测是否为 go run 开发模式（可执行文件在临时编译目录中），
 // 开发模式下禁用自动更新。
 func isDevRun() bool {
-	exe := selfExe
+	exe := sysrestart.Exe()
 	if exe == "" {
 		return false
 	}
@@ -159,7 +187,7 @@ func (s *Server) handleUpdateInfo(w http.ResponseWriter, r *http.Request) {
 	if isDevRun() {
 		mode = "dev"
 	}
-	exe := selfExe
+	exe := sysrestart.Exe()
 	srcDir := s.cfgStr("bot.update.source_dir")
 	branch := s.cfgStr("bot.update.branch")
 	if branch == "" {
@@ -287,20 +315,12 @@ func (s *Server) handleUpdateStart(w http.ResponseWriter, r *http.Request) {
 	}
 	gitURL := s.cfgStr("bot.update.git_url")
 
-	upd.mu.Lock()
-	if upd.running {
-		upd.mu.Unlock()
-		writeError(w, http.StatusConflict, "已有更新任务正在进行中")
+	if !upd.tryBegin() {
+		writeError(w, http.StatusConflict, "已有更新任务正在进行中或正在重启")
 		return
 	}
-	upd.running = true
-	upd.phase = upPhaseEnv
-	upd.logs = nil
-	upd.err = ""
-	upd.errKind = ""
-	upd.buf = ""
-	upd.mu.Unlock()
 
+	oplog.Record(oplog.CategoryUpdate, "update_start", "面板启动自动更新（分支: "+branch+"），IP: "+clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	go s.runUpdate(srcDir, gitURL, branch)
 }
@@ -436,7 +456,7 @@ func (s *Server) runUpdate(srcDir, gitURL, branch string) {
 	// 会读到已被 rename 的旧二进制路径（/proc/self/exe 跟随 inode）。
 	upd.setPhase(upPhaseSwap)
 	upd.appendLog("== 替换二进制 ==")
-	exe := selfExe
+	exe := sysrestart.Exe()
 	if exe == "" {
 		fail("系统错误", fmt.Errorf("无法获取当前可执行文件路径"))
 		return
@@ -467,7 +487,10 @@ func (s *Server) runUpdate(srcDir, gitURL, branch string) {
 	s.opt.Logger.Info("自动更新完成，正在重启 AniaBot")
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
-		restartSelf(s.opt.Logger)
+		sysrestart.Self(s.opt.Logger)
+		// Self 正常时会替换/退出当前进程；只有重启失败才会回到这里，
+		// 此时清掉重启标记，允许手动重试下一次更新。
+		upd.clearRestarting()
 	}()
 }
 

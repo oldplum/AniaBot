@@ -101,6 +101,21 @@ func (p *AIChatPlugin) registerScopedTools(sessionExecutor *llmtool.SessionToolE
 			sessionExecutor.RegisterSession(tool)
 		}
 	}
+	// 注册 skill 管理工具（skill_list / skill_install / skill_remove）：让 AI
+	// 无需后台面板即可自行安装/卸载技能（配置门控，默认关闭）
+	if p.cfg.SkillTool.Enable {
+		for _, tool := range newSkillTools(p) {
+			sessionExecutor.RegisterSession(tool)
+		}
+	}
+	// 注册 MCP 管理工具（mcp_list / mcp_add / mcp_remove / mcp_reconnect）：让 AI
+	// 自行管理 MCP 服务器，配置写入 files.mcp_json 持久化并即时热注册生效
+	// （配置门控，默认关闭）
+	if p.cfg.MCPTool.Enable {
+		for _, tool := range newMCPTools(p) {
+			sessionExecutor.RegisterSession(tool)
+		}
+	}
 }
 
 func (p *AIChatPlugin) mainMaxIterations() int {
@@ -121,15 +136,21 @@ func (p *AIChatPlugin) llmClientOptions() []aichat.LLMClientOption {
 		}
 		opts = append(opts, aichat.WithRetry(p.cfg.Retry.MaxAttempts, baseDelay))
 	}
+	// Prompt 缓存：仅 anthropic 格式生效（cache_control 断点），
+	// chat_completions / responses 为自动前缀缓存，无需配置
+	opts = append(opts, aichat.WithPromptCache(aichat.PromptCacheConfig{
+		Enable: p.cfg.PromptCache.Enable,
+		TTL:    p.cfg.PromptCache.TTL,
+	}))
 	if p.cfg.Fallback.Model != "" {
-		opts = append(opts, aichat.WithFallback(p.cfg.Fallback.BaseURL, p.cfg.Fallback.APIKey, p.cfg.Fallback.Model))
+		opts = append(opts, aichat.WithFallback(p.cfg.Fallback.BaseURL, p.cfg.Fallback.APIKey, p.cfg.Fallback.Model, p.cfg.Fallback.APIFormat))
 	}
 	return opts
 }
 
 // subagentLLMConfig 子代理模型配置：留空字段回退主模型配置。
-func (p *AIChatPlugin) subagentLLMConfig() (baseURL, apiKey, model string) {
-	baseURL, apiKey, model = p.cfg.BaseURL, p.cfg.APIKey, p.cfg.Model
+func (p *AIChatPlugin) subagentLLMConfig() (baseURL, apiKey, model, format string) {
+	baseURL, apiKey, model, format = p.cfg.BaseURL, p.cfg.APIKey, p.cfg.Model, p.cfg.APIFormat
 	if p.cfg.Subagent.BaseURL != "" {
 		baseURL = p.cfg.Subagent.BaseURL
 	}
@@ -139,12 +160,15 @@ func (p *AIChatPlugin) subagentLLMConfig() (baseURL, apiKey, model string) {
 	if p.cfg.Subagent.Model != "" {
 		model = p.cfg.Subagent.Model
 	}
-	return baseURL, apiKey, model
+	if p.cfg.Subagent.APIFormat != "" {
+		format = p.cfg.Subagent.APIFormat
+	}
+	return baseURL, apiKey, model, format
 }
 
 // compressorLLMConfig 压缩器模型配置：留空字段回退主模型配置。
-func (p *AIChatPlugin) compressorLLMConfig() (baseURL, apiKey, model string) {
-	baseURL, apiKey, model = p.cfg.BaseURL, p.cfg.APIKey, p.cfg.Model
+func (p *AIChatPlugin) compressorLLMConfig() (baseURL, apiKey, model, format string) {
+	baseURL, apiKey, model, format = p.cfg.BaseURL, p.cfg.APIKey, p.cfg.Model, p.cfg.APIFormat
 	if p.cfg.Compressor.BaseURL != "" {
 		baseURL = p.cfg.Compressor.BaseURL
 	}
@@ -154,7 +178,10 @@ func (p *AIChatPlugin) compressorLLMConfig() (baseURL, apiKey, model string) {
 	if p.cfg.Compressor.Model != "" {
 		model = p.cfg.Compressor.Model
 	}
-	return baseURL, apiKey, model
+	if p.cfg.Compressor.APIFormat != "" {
+		format = p.cfg.Compressor.APIFormat
+	}
+	return baseURL, apiKey, model, format
 }
 
 // buildCompressorClient 构造上下文压缩专用 LLM 客户端；配置三字段全空时
@@ -163,8 +190,9 @@ func (p *AIChatPlugin) buildCompressorClient() *aichat.LLMClient {
 	if p.cfg.Compressor.BaseURL == "" && p.cfg.Compressor.APIKey == "" && p.cfg.Compressor.Model == "" {
 		return nil
 	}
-	baseURL, apiKey, model := p.compressorLLMConfig()
-	client, err := aichat.NewLLMClient(baseURL, apiKey, model, p.llmClientOptions()...)
+	baseURL, apiKey, model, format := p.compressorLLMConfig()
+	client, err := aichat.NewLLMClient(baseURL, apiKey, model,
+		append(p.llmClientOptions(), aichat.WithAPIFormat(format))...)
 	if err != nil {
 		p.Logger.Error("创建压缩器 LLM 客户端失败，压缩将复用主对话模型", "error", err.Error())
 		return nil
@@ -174,8 +202,13 @@ func (p *AIChatPlugin) buildCompressorClient() *aichat.LLMClient {
 
 func (p *AIChatPlugin) getChat(b bot.Bot, id message.QID, isGroup bool, prompt string) *aichat.ChatBot {
 	key := sessionKey(id, isGroup)
-	chat, ok := p.chats.Load(key)
-	if !ok {
+	if v, ok := p.chats.Load(key); ok {
+		e := v.(*chatEntry)
+		e.lastActive.Store(time.Now().Unix())
+		return e.chat
+	}
+	// 会话未驻留（首次发言或被淘汰后）：重新创建并从持久层回放历史
+	{
 		// 每个会话创建独立的 SessionToolExecutor，动态加载的工具互不影响
 		sessionExecutor := p.toolExecutor.NewSessionExecutor()
 		p.registerScopedTools(sessionExecutor, id, isGroup)
@@ -194,13 +227,14 @@ func (p *AIChatPlugin) getChat(b bot.Bot, id message.QID, isGroup bool, prompt s
 		}
 		// 在 system prompt 末尾注入当前对话场景（群聊/私聊、群信息、消息 id 前缀含义）
 		prompt += p.buildScenePrompt(b, id, isGroup)
-		// 每个会话独立的历史持久化存储；g:/f: 前缀避免群聊与好友 id 相同导致历史串扰
+		// 每个会话独立的历史持久化存储；g:/f: 前缀避免群聊与好友 id 相同导致历史串扰。
+		// SQL 后端走行级存储（ania_chat_session/ania_chat_message），否则回退 KV 整段 JSON
 		var historyStore aichat.HistoryStore
-		if p.PersistentStorage != nil {
-			histKey := "chat:" + key
-			// 旧版历史键不带 g:/f: 前缀，首次访问时迁移到新键
-			migrateLegacyHistory(p.PersistentStorage, "chat:"+id.String(), histKey)
-			historyStore = newPersistentHistoryStore(p.PersistentStorage, histKey, p.Logger)
+		switch {
+		case p.historyDB != nil:
+			historyStore = newSQLHistoryStore(p.historyDB, key, p.Logger)
+		case p.PersistentStorage != nil:
+			historyStore = newPersistentHistoryStore(p.PersistentStorage, "chat:"+key, p.Logger)
 		}
 		c, err := aichat.NewChatBot(
 			p.cfg.BaseURL,
@@ -210,7 +244,7 @@ func (p *AIChatPlugin) getChat(b bot.Bot, id message.QID, isGroup bool, prompt s
 			p.cfg.MaxContextTokens,
 			sessionExecutor,
 			historyStore,
-			aichat.WithClientOptions(p.llmClientOptions()...),
+			aichat.WithClientOptions(append(p.llmClientOptions(), aichat.WithAPIFormat(p.cfg.APIFormat))...),
 			aichat.WithCompressorClient(p.buildCompressorClient()),
 		)
 		if err != nil {
@@ -224,8 +258,7 @@ func (p *AIChatPlugin) getChat(b bot.Bot, id message.QID, isGroup bool, prompt s
 		}
 		// 回放持久化的历史，使对话跨重启延续
 		c.LoadHistory(context.Background())
-		p.chats.Store(key, c)
+		p.chats.Store(key, newChatEntry(c, id, isGroup))
 		return c
 	}
-	return chat.(*aichat.ChatBot)
 }

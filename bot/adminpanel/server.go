@@ -2,7 +2,8 @@
 //
 // 面板由后端 API（纯 net/http，零额外依赖）与内嵌的 Vue SPA（go:embed dist）
 // 组成，功能包括：配置管理（读取/修改配置中心，重启后生效）、运行状态总览、
-// 插件列表、群/好友列表与 AI 定时任务管理（列表 / 启停）与执行日志。
+// 插件列表、群/好友列表与 AI 定时任务管理（列表 / 启停）与执行日志、
+// 操作日志（面板与 AI 工具的管理操作审计，见 component/oplog）。
 //
 // 认证：首次启动生成随机初始密码打印到控制台，SHA-256+salt 哈希存于持久化
 // 存储的 __admin 命名空间；登录后签发内存会话（HttpOnly Cookie，24h 过期）。
@@ -20,13 +21,16 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jeanhua/AniaBot/bot/component/consollog"
 	"github.com/jeanhua/AniaBot/bot/component/msglog"
+	"github.com/jeanhua/AniaBot/bot/component/oplog"
 	"github.com/jeanhua/AniaBot/bot/component/querylog"
+	"github.com/jeanhua/AniaBot/bot/component/sysrestart"
 	"github.com/jeanhua/AniaBot/bot/component/tasklog"
 	"github.com/jeanhua/AniaBot/bot/core/configstore"
 	"github.com/jeanhua/AniaBot/common/bot"
@@ -85,6 +89,12 @@ type SkillSource interface {
 	SkillDelete(name string) error
 	// SkillUpload 从 zip 压缩包内容安装 skill 并热重载，filename 为原始文件名
 	SkillUpload(filename string, data []byte) error
+}
+
+// SkillDetailSource 可选接口：在 SkillSource 之外提供 SKILL 详情查看能力。
+// 插件未实现时，面板详情入口会返回「功能未启用」，不影响列表 / 上传 / 删除。
+type SkillDetailSource interface {
+	SkillDetail(name string) (plugininfo.SkillDetail, error)
 }
 
 // MemorySource 可选接口：插件实现后，面板「记忆管理」页可对其 AI 长期记忆
@@ -219,6 +229,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/password", s.requireAuth(http.HandlerFunc(s.handleChangePassword)))
 	s.mux.Handle("GET /api/config/schema", s.requireAuth(http.HandlerFunc(s.handleConfigSchema)))
 	s.mux.Handle("GET /api/config", s.requireAuth(http.HandlerFunc(s.handleConfigGet)))
+	s.mux.Handle("GET /api/config/export", s.requireAuth(http.HandlerFunc(s.handleConfigExport)))
 	s.mux.Handle("PUT /api/config", s.requireAuth(http.HandlerFunc(s.handleConfigPut)))
 	s.mux.Handle("GET /api/config/presets", s.requireAuth(http.HandlerFunc(s.handlePresetList)))
 	s.mux.Handle("POST /api/config/presets", s.requireAuth(http.HandlerFunc(s.handlePresetSave)))
@@ -235,6 +246,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/msglogs", s.requireAuth(http.HandlerFunc(s.handleMsgLogs)))
 	s.mux.Handle("GET /api/querylogs", s.requireAuth(http.HandlerFunc(s.handleQueryLogs)))
 	s.mux.Handle("GET /api/consolelogs", s.requireAuth(http.HandlerFunc(s.handleConsoleLogs)))
+	s.mux.Handle("GET /api/oplogs", s.requireAuth(http.HandlerFunc(s.handleOpLogs)))
 	s.mux.Handle("GET /api/tokenstats", s.requireAuth(http.HandlerFunc(s.handleTokenStats)))
 	s.mux.Handle("GET /api/balance", s.requireAuth(http.HandlerFunc(s.handleBalance)))
 	s.mux.Handle("GET /api/tokenstats/detail", s.requireAuth(http.HandlerFunc(s.handleTokenStatsDetail)))
@@ -244,6 +256,7 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/clocks/{id}", s.requireAuth(http.HandlerFunc(s.handleClockDelete)))
 	s.mux.Handle("GET /api/skills", s.requireAuth(http.HandlerFunc(s.handleSkillList)))
 	s.mux.Handle("POST /api/skills", s.requireAuth(http.HandlerFunc(s.handleSkillUpload)))
+	s.mux.Handle("GET /api/skills/{name}", s.requireAuth(http.HandlerFunc(s.handleSkillDetail)))
 	s.mux.Handle("DELETE /api/skills/{name}", s.requireAuth(http.HandlerFunc(s.handleSkillDelete)))
 	s.mux.Handle("GET /api/memory/scopes", s.requireAuth(http.HandlerFunc(s.handleMemoryScopes)))
 	s.mux.Handle("GET /api/memory/list", s.requireAuth(http.HandlerFunc(s.handleMemoryList)))
@@ -363,11 +376,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.opt.Logger.Warn("面板登录失败：密码错误", "ip", ip)
+		oplog.Record(oplog.CategoryAuth, "login_fail", "面板登录失败（密码错误），IP: "+ip)
 		writeError(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
 	s.auth.guard.recordSuccess(ip)
 	s.opt.Logger.Info("面板登录成功", "ip", ip)
+	oplog.Record(oplog.CategoryAuth, "login", "面板登录成功，IP: "+ip)
 	token := s.auth.NewSession()
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -398,6 +413,7 @@ func (s *Server) handleMe(w http.ResponseWriter, _ *http.Request) {
 // handleSetupComplete 标记首次设置向导完成（或跳过）。
 func (s *Server) handleSetupComplete(w http.ResponseWriter, _ *http.Request) {
 	s.opt.Config.CompleteSetup()
+	oplog.Record(oplog.CategorySystem, "setup_complete", "首次设置向导已完成")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -419,6 +435,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// 修改密码后销毁所有会话（含当前），强制使用新密码重新登录
 	s.auth.DropAllSessions()
+	oplog.Record(oplog.CategoryAuth, "password_change", "面板密码已修改，IP: "+clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -443,6 +460,22 @@ func (s *Server) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, all)
+}
+
+// handleConfigExport 导出完整配置为 JSON 文件下载。
+// 与 GET /api/config 不同，敏感字段（密钥/Token 等）不掩码、保留真实值，
+// 便于备份与迁移；接口需要登录，响应标记 no-store 并携带下载文件名。
+func (s *Server) handleConfigExport(w http.ResponseWriter, _ *http.Request) {
+	data, err := json.MarshalIndent(s.opt.Config.All(), "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "导出配置失败")
+		return
+	}
+	filename := fmt.Sprintf("aniabot-config-%s.json", time.Now().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +506,12 @@ func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("配置已通过 Web 面板更新", "keys", len(updates))
+	keys := make([]string, 0, len(updates))
+	for k := range updates {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	oplog.Record(oplog.CategoryConfig, "config_update", "面板更新配置（"+strconv.Itoa(len(keys))+" 项）: "+strings.Join(keys, ", "))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "need_restart": true})
 }
 
@@ -516,6 +555,7 @@ func (s *Server) handleFilePut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "保存失败")
 		return
 	}
+	oplog.Record(oplog.CategoryConfig, "file_update", "面板修改扩展配置文件: "+r.PathValue("name"))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "need_restart": true})
 }
 
@@ -599,7 +639,7 @@ func (s *Server) handleFriends(w http.ResponseWriter, _ *http.Request) {
 
 // handleTaskLogs 按条件分页查询定时任务执行日志（新在前）。
 // 支持查询参数：target_type（group/friend）、target_id（群号/QQ）、task_id（任务 ID）、
-// status（running/success/timeout/error）、start / end（RFC3339 或 datetime-local 格式）、
+// status（running/success/timeout/error/interrupted）、start / end（RFC3339 或 datetime-local 格式）、
 // keyword（匹配任务标题）、limit（每页条数，默认 50，最大 200）、
 // before（分页游标：仅返回比该日志 ID 更旧的记录）。
 // 响应：{"items": [...], "has_more": bool}。
@@ -621,9 +661,9 @@ func (s *Server) handleTaskLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch f.Status {
-	case "", tasklog.StatusRunning, tasklog.StatusSuccess, tasklog.StatusTimeout, tasklog.StatusError:
+	case "", tasklog.StatusRunning, tasklog.StatusSuccess, tasklog.StatusTimeout, tasklog.StatusError, tasklog.StatusInterrupted:
 	default:
-		writeError(w, http.StatusBadRequest, "status 仅支持 running / success / timeout / error")
+		writeError(w, http.StatusBadRequest, "status 仅支持 running / success / timeout / error / interrupted")
 		return
 	}
 	if v := q.Get("start"); v != "" {
@@ -770,6 +810,50 @@ func (s *Server) handleConsoleLogs(w http.ResponseWriter, r *http.Request) {
 	writePagedLogs(w, items, hasMore)
 }
 
+// handleOpLogs 按条件分页查询操作日志（面板与 AI 工具的管理操作审计，新在前）。
+// 支持查询参数：category（操作分类，见 oplog.Category*）、start / end
+// （RFC3339 或 datetime-local 格式）、keyword（匹配操作名 / 详情）、
+// limit（每页条数，默认 50，最大 200）、before（分页游标：仅返回比该日志 ID 更旧的记录）。
+// 响应：{"items": [...], "has_more": bool}。
+func (s *Server) handleOpLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := oplog.Filter{
+		Category: q.Get("category"),
+		Keyword:  q.Get("keyword"),
+	}
+	if v := q.Get("start"); v != "" {
+		t, err := parseQueryTime(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "start 时间格式错误（支持 RFC3339 或 2006-01-02T15:04）")
+			return
+		}
+		f.Start = t
+	}
+	if v := q.Get("end"); v != "" {
+		t, err := parseQueryTime(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "end 时间格式错误（支持 RFC3339 或 2006-01-02T15:04）")
+			return
+		}
+		f.End = t
+	}
+	if v := q.Get("before"); v != "" {
+		if _, err := strconv.ParseUint(v, 36, 64); err != nil {
+			writeError(w, http.StatusBadRequest, "before 游标格式错误（应为日志 ID）")
+			return
+		}
+		f.Before = v
+	}
+	limit := parsePageLimit(q.Get("limit"))
+	f.Limit = limit + 1
+	items := oplog.Query(f)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	writePagedLogs(w, items, hasMore)
+}
+
 // parsePageLimit 解析分页大小：默认 50，最大 200；非法值取默认。
 func parsePageLimit(v string) int {
 	const (
@@ -839,6 +923,7 @@ func (s *Server) handleClockCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("定时任务已通过 Web 面板创建", "task", id, "title", req.Title)
+	oplog.Record(oplog.CategoryClock, "clock_create", "面板创建定时任务 "+id+"（"+req.Title+"）")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
@@ -865,6 +950,7 @@ func (s *Server) handleClockUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("定时任务已通过 Web 面板更新", "task", id)
+	oplog.Record(oplog.CategoryClock, "clock_update", "面板更新定时任务 "+id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -880,6 +966,7 @@ func (s *Server) handleClockDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("定时任务已通过 Web 面板删除", "task", id)
+	oplog.Record(oplog.CategoryClock, "clock_delete", "面板删除定时任务 "+id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -935,7 +1022,31 @@ func (s *Server) handleSkillUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("skill 已通过 Web 面板上传", "file", header.Filename)
+	oplog.Record(oplog.CategorySkill, "skill_upload", "面板上传 skill: "+header.Filename)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSkillDetail 返回指定 skill 的 SKILL.md 完整内容与附属文件信息。
+func (s *Server) handleSkillDetail(w http.ResponseWriter, r *http.Request) {
+	if s.opt.Skills == nil {
+		writeError(w, http.StatusNotFound, "skill 功能未启用")
+		return
+	}
+	src, ok := s.opt.Skills.(SkillDetailSource)
+	if !ok {
+		writeError(w, http.StatusNotFound, "skill 详情功能未启用")
+		return
+	}
+	name := r.PathValue("name")
+	detail, err := src.SkillDetail(name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if detail.Files == nil {
+		detail.Files = []plugininfo.SkillFileInfo{}
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleSkillDelete 按名称删除 skill（同时从磁盘移除）。
@@ -950,6 +1061,7 @@ func (s *Server) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opt.Logger.Info("skill 已通过 Web 面板删除", "skill", name)
+	oplog.Record(oplog.CategorySkill, "skill_delete", "面板删除 skill: "+name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -994,6 +1106,7 @@ func (s *Server) handleQuotaReset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryQuota, "quota_reset", "面板清零配额: "+req.Scope)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1042,6 +1155,7 @@ func (s *Server) handleMemoryCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryMemory, "memory_create", "面板新增记忆 "+req.Scope+"/"+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
@@ -1060,6 +1174,7 @@ func (s *Server) handleMemoryUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryMemory, "memory_update", "面板更新记忆 "+req.Scope+"/"+req.ID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1074,6 +1189,7 @@ func (s *Server) handleMemoryDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryMemory, "memory_delete", "面板删除记忆 "+q.Get("scope")+"/"+q.Get("id"))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1137,6 +1253,7 @@ func (s *Server) handleTeamCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryTeam, "team_create", "面板创建团队 "+req.Scope+"/"+req.Name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1155,6 +1272,7 @@ func (s *Server) handleTeamUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryTeam, "team_update", "面板更新团队 "+req.Scope+"/"+req.Name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1169,6 +1287,7 @@ func (s *Server) handleTeamDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryTeam, "team_delete", "面板删除团队 "+q.Get("scope")+"/"+q.Get("name"))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1220,6 +1339,7 @@ func (s *Server) handleKnowledgeCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryKnowledge, "knowledge_create", "面板新增知识库文档 "+req.Scope+"/"+id+"（"+req.Title+"）")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
@@ -1238,6 +1358,7 @@ func (s *Server) handleKnowledgeUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryKnowledge, "knowledge_update", "面板更新知识库文档 "+req.Scope+"/"+req.ID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1252,6 +1373,7 @@ func (s *Server) handleKnowledgeDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryKnowledge, "knowledge_delete", "面板删除知识库文档 "+q.Get("scope")+"/"+q.Get("id"))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1271,15 +1393,17 @@ func (s *Server) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	oplog.Record(oplog.CategoryKnowledge, "knowledge_import", "面板从 URL 导入知识库文档 "+req.Scope+"/"+id+": "+req.URL)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
 // handleRestart 自重启 Bot：先响应请求，再延迟以相同命令行参数重启进程。
 // 配置修改随之生效；面板会话持久化在数据库中，重启后无需重新登录。
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	oplog.Record(oplog.CategorySystem, "restart", "面板请求重启 Bot，IP: "+clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		restartSelf(s.opt.Logger)
+		sysrestart.Self(s.opt.Logger)
 	}()
 }

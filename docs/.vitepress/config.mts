@@ -27,6 +27,7 @@ export default withMermaid(defineConfig({
       { text: '指南', link: '/guide/introduction', activeMatch: '/guide/' },
       { text: '插件开发', link: '/plugin/overview', activeMatch: '/plugin/' },
       { text: 'API 参考', link: '/api/events', activeMatch: '/api/' },
+      { text: '技术原理', link: '/internals/', activeMatch: '/internals/' },
       {
         text: '链接',
         items: [
@@ -63,6 +64,7 @@ export default withMermaid(defineConfig({
           items: [
             { text: '插件系统概览', link: '/plugin/overview' },
             { text: '第一个插件', link: '/plugin/first-plugin' },
+            { text: '从零开发完整插件', link: '/plugin/tutorial' },
             { text: '命令解析', link: '/plugin/commands' },
             { text: '消息构造器', link: '/plugin/message-builder' },
           ],
@@ -72,6 +74,7 @@ export default withMermaid(defineConfig({
           items: [
             { text: '数据存储', link: '/plugin/storage' },
             { text: '定时任务', link: '/plugin/cron' },
+            { text: '面板服务注册', link: '/plugin/panel-services' },
           ],
         },
         {
@@ -89,6 +92,18 @@ export default withMermaid(defineConfig({
             { text: '事件接口', link: '/api/events' },
             { text: 'Bot 接口', link: '/api/bot' },
             { text: '存储接口', link: '/api/storage' },
+          ],
+        },
+      ],
+      '/internals/': [
+        {
+          text: '技术原理',
+          items: [
+            { text: '总览', link: '/internals/' },
+            { text: '框架核心原理', link: '/internals/framework' },
+            { text: 'AI 引擎（一）LLM 与对话循环', link: '/internals/agent-llm' },
+            { text: 'AI 引擎（二）上下文与记忆', link: '/internals/agent-context' },
+            { text: 'AI 引擎（三）工具与编排', link: '/internals/agent-tools' },
           ],
         },
       ],

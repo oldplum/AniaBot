@@ -108,12 +108,13 @@ func newClockManager(p *AIChatPlugin, defaultTimeout time.Duration, maxLog int) 
 		cron:           cron.New(),
 	}
 	m.loadAll()
+	// 进程重启后，上一次执行遗留的 running 日志已不可能再正常收尾
+	//（goroutine 随进程销毁），启动时统一标记为 interrupted，
+	// 避免面板上的执行记录长期停留在"执行中"
+	if n := m.log.MarkRunningInterrupted(); n > 0 {
+		m.logger.Info("已把上次进程遗留的运行中任务日志标记为中断", "count", n)
+	}
 	return m
-}
-
-// recentLogs 返回最近的执行日志（新在前），供 /clock 命令查询。
-func (m *clockManager) recentLogs(limit int) []tasklog.Entry {
-	return m.log.Recent(limit)
 }
 
 // TaskLogQuery 按条件查询 AI 定时任务执行日志（clock 未启用时返回 nil），
@@ -679,11 +680,11 @@ func (m *clockManager) executeTask(ctx context.Context, task *ClockTask, rec *ta
 		defer subagents.cancelPending()
 	}
 	// 定时任务与子代理共用独立模型配置（留空回退主模型）
-	saBaseURL, saAPIKey, saModel := p.subagentLLMConfig()
+	saBaseURL, saAPIKey, saModel, saFormat := p.subagentLLMConfig()
 	chat, err := aichat.NewChatBot(
 		saBaseURL, saAPIKey, saModel,
 		prompt, p.cfg.MaxContextTokens, sessionExecutor, nil,
-		aichat.WithClientOptions(p.llmClientOptions()...),
+		aichat.WithClientOptions(append(p.llmClientOptions(), aichat.WithAPIFormat(saFormat))...),
 	)
 	if err != nil {
 		return "", aichat.TokenUsage{}, fmt.Errorf("创建对话失败: %w", err)

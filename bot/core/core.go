@@ -17,6 +17,7 @@ import (
 	"github.com/jeanhua/AniaBot/bot/adminpanel"
 	"github.com/jeanhua/AniaBot/bot/component/consollog"
 	"github.com/jeanhua/AniaBot/bot/component/msglog"
+	"github.com/jeanhua/AniaBot/bot/component/oplog"
 	"github.com/jeanhua/AniaBot/bot/component/querylog"
 	"github.com/jeanhua/AniaBot/bot/component/tasklog"
 	"github.com/jeanhua/AniaBot/bot/core/configstore"
@@ -48,10 +49,8 @@ type AniaBot struct {
 
 	// adapters 已启用的平台适配器（可多开：QQ + 飞书……）
 	adapters []*adapterEntry
-	// adapterFactory 延迟创建单个适配器（旧版单适配器用法，注册表启用后保留兼容）
-	adapterFactory func(cfg *viper.Viper) adapter.Adapter
-	plugins        []plugin.Plugin
-	cfg            *viper.Viper
+	plugins  []plugin.Plugin
+	cfg      *viper.Viper
 
 	configStore *configstore.Store
 
@@ -122,25 +121,13 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// WithAdapterFactory 延迟创建单个适配器（兼容旧用法）：Run 时配置中心加载完成后
-// 调用工厂，按配置选择具体适配器实现。多平台并存请改用适配器注册表
-// （各平台包 init() 中 adapter.Register，按 bot.platform.<name>.enable 启用）。
-func WithAdapterFactory(factory func(cfg *viper.Viper) adapter.Adapter) Option {
-	return func(ania *AniaBot) {
-		ania.adapterFactory = factory
-	}
-}
-
-func NewAniaBot(a adapter.Adapter, option ...Option) *AniaBot {
+func NewAniaBot(option ...Option) *AniaBot {
 	ctx, cancel := context.WithCancel(context.Background())
 	ania := &AniaBot{
 		ctx:       ctx,
 		cancel:    cancel,
 		pluginSet: map[string]struct{}{},
 		plugins:   make([]plugin.Plugin, 0),
-	}
-	if a != nil {
-		ania.addAdapter(adapter.Definition{Name: "legacy", Platform: "qq"}, a)
 	}
 	for _, op := range option {
 		op(ania)
@@ -245,6 +232,10 @@ func (ania *AniaBot) Run() {
 		ania.persistent = store
 	}
 
+	// 操作日志（面板「操作日志」页数据源）：记录面板与 AI 工具的管理操作，
+	// 独立 __oplog 命名空间，SQL 后端走 ania_op_log 行级存储。
+	oplog.Init(ania.persistent.Clone("__oplog"), 500, Logger().WithGroup("oplog"))
+
 	// 收集配置字段元信息（框架 + 各平台适配器 + 各插件的 ConfigRegistrar /
 	// ConfigSchemaProvider 声明），面板表单基于该注册表动态渲染。
 	pluginconfig.Register(frameworkConfigFields...)
@@ -287,25 +278,20 @@ func (ania *AniaBot) Run() {
 		ania.cfg = cs.ToViper()
 	}
 
-	// 适配器：注册表 + 旧版单适配器工厂二选一。创建早于插件 Start，
+	// 适配器：按注册表创建（各平台包 init() 中 adapter.Register，以
+	// bot.platform.<name>.enable 开关启用）。创建早于插件 Start，
 	// 保证 setup_pending 期间插件调用发送接口时适配器已就绪。
-	if len(ania.adapters) == 0 {
-		if ania.adapterFactory != nil {
-			a := ania.adapterFactory(ania.cfg)
-			ania.addAdapter(adapter.Definition{Name: "legacy", Platform: "qq"}, a)
+	for _, d := range adapter.Definitions() {
+		if !ania.cfg.GetBool("bot.platform." + d.Name + ".enable") {
+			continue
 		}
-		for _, d := range adapter.Definitions() {
-			if !ania.cfg.GetBool("bot.platform." + d.Name + ".enable") {
-				continue
-			}
-			a, err := d.New(ania.cfg)
-			if err != nil {
-				Logger().Error("创建适配器失败，已跳过该平台", "platform", d.Name, "error", err)
-				continue
-			}
-			ania.addAdapter(d, a)
-			Logger().Info("已启用平台适配器", "platform", d.Name)
+		a, err := d.New(ania.cfg)
+		if err != nil {
+			Logger().Error("创建适配器失败，已跳过该平台", "platform", d.Name, "error", err)
+			continue
 		}
+		ania.addAdapter(d, a)
+		Logger().Info("已启用平台适配器", "platform", d.Name)
 	}
 	if len(ania.adapters) == 0 {
 		Logger().Error("未启用任何平台适配器：请在 Web 面板的「平台适配器」配置中启用至少一个平台")
@@ -348,6 +334,10 @@ func (ania *AniaBot) Run() {
 			p.SetConfig(plugin.SystemConfig{
 				AdminId: message.FromString(ania.cfg.GetString("bot.admin_id")),
 			})
+			// 配置中心读写能力（AI 配置管理工具等场景）；持久化存储不可用时保持 nil
+			if ania.configStore != nil {
+				p.SetConfigEditor(ania.configStore)
+			}
 
 			// start
 			startCtx, cancel := context.WithTimeout(ania.ctx, StartEventTimeout)
@@ -374,6 +364,7 @@ func (ania *AniaBot) Run() {
 
 	fmt.Println(LogoASCII)
 	Logger().Info("Bot启动完成...")
+	oplog.Record(oplog.CategorySystem, "start", "AniaBot 启动完成")
 
 	// 首次启动（设置向导未完成）时适配器不会连接，跳过 Awake：
 	// 插件的 Awake 多依赖连接，此时触发只会发送失败；

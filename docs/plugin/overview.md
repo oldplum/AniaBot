@@ -152,7 +152,7 @@ import (
 )
 
 func main() {
-    bot := core.NewAniaBot(nil)
+    bot := core.NewAniaBot()
 
     bot.AddPlugin(pluginsys.NewPluginSys())
     bot.AddPlugin(myplugin.NewPlugin())   // ← 你的插件
@@ -166,4 +166,6 @@ func main() {
 ## 下一步
 
 - [第一个插件](/plugin/first-plugin) —— 动手写代码
+- [从零开发完整插件](/plugin/tutorial) —— 配置、存储、定时任务与面板服务全流程
+- [面板服务注册](/plugin/panel-services) —— 让你的插件成为面板页面数据源
 - [完整示例](/plugin/examples) —— 看几个真实插件的完整实现

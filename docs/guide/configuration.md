@@ -193,11 +193,29 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
-| `plugin.ai_chat_bot.base_url` | `https://api.deepseek.com` | 任意 OpenAI 兼容 API 地址 |
+| `plugin.ai_chat_bot.api_format` | `chat_completions` | LLM API 格式：`chat_completions`（OpenAI 兼容，DeepSeek 等）/ `responses`（OpenAI Responses API）/ `anthropic`（Anthropic Messages API，Claude） |
+| `plugin.ai_chat_bot.base_url` | `https://api.deepseek.com` | API 地址；`anthropic` 格式填 `https://api.anthropic.com` |
 | `plugin.ai_chat_bot.api_key` | 空（必填） | API 密钥 |
 | `plugin.ai_chat_bot.model` | `deepseek-chat` | 主模型名称 |
 | `plugin.ai_chat_bot.multimodal` | `false` | 主模型是否支持图片输入 |
 | `plugin.ai_chat_bot.rate_limit` | `2` | 同时处理的 AI 请求并发上限，超出后直接拒绝 |
+
+::: tip 关于 API 格式
+三种格式的对话能力（工具调用、流式回复、token 统计、备用模型切换）行为一致。差异说明：
+
+- `anthropic`：深度思考（`thinking.mode`）映射为 `budget_tokens`，思考块会随历史持久化并在多轮中原样回传；`top_k` 原生支持，但开启思考时 temperature/top_p/top_k 按 API 要求不下发
+- `responses`：`top_k` 不支持会被忽略
+- 子代理（`plugin.ai_chat_bot.subagent.api_format`）、上下文压缩器（`plugin.ai_chat_bot.compressor.api_format`）、备用模型（`plugin.ai_chat_bot.fallback.api_format`）可独立选择格式，留空跟随主模型
+:::
+
+### 会话管理
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.session.max_idle_minutes` | `120` | 闲置会话回收时间（分钟），超过未活动的会话被从内存淘汰；`0` 表示不按闲置淘汰 |
+| `plugin.ai_chat_bot.session.max_sessions` | `128` | 最大驻留内存的会话数，超出时淘汰最久未活动的会话；`0` 表示不限制 |
+
+淘汰只释放内存对象，对话历史已持久化，下次发言自动重建并回放。注意：会话内通过 `mcp_load` 动态加载的工具会随淘汰失效（等同重启），再次对话时需重新加载。
 
 ### 模型参数
 
@@ -230,6 +248,9 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 | --- | --- | --- |
 | `plugin.ai_chat_bot.skills_dir` | `./skills` | Skill 目录 |
 | `plugin.ai_chat_bot.skills` | `[]` | 指定加载的 skill 名称，空 = 加载全部 |
+| `plugin.ai_chat_bot.skill_tool.enable` | `false` | 启用 AI Skill 管理工具（`skill_list` / `skill_install` / `skill_remove`），允许 AI 用 `webSearch` / `webExplore` 上网搜索技能资源后自行下载安装（zip 链接 / GitHub 仓库 / SKILL.md 直链），或直接撰写 SKILL.md 内容创建技能，安装后热重载立即生效 |
+
+常驻的 `skill_reload` 工具（无需开关）用于 AI 直接编辑本地 skill 文件（如经 `bash`）后刷新缓存——面板/管理工具的安装删除会自动热重载，绕过管理器直接改文件则需调用它刷新。
 
 ### 联网搜索
 
@@ -298,6 +319,81 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 
 子代理以全新一次性上下文运行、拥有与主 AI 一致的工具能力，但**不能再委派子代理**。详见 [AI 对话插件](/guide/builtin-plugins#ai-对话插件)。
 
+
+### AI 知识库（knowledge）
+
+知识库让 AI 把完整资料（文章、URL 正文等）存入会话库或全局库，并在对话中按需检索引用：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.kb.enable` | `true` | 启用后 AI 可通过 `kb_add` / `kb_search` / `kb_forget` 等工具管理知识库 |
+| `plugin.ai_chat_bot.kb.max_docs` | `500` | 单个作用域（会话库 / 全局库）的文档条数上限 |
+| `plugin.ai_chat_bot.kb.auto_inject` | `true` | 每次对话前自动按关键词检索相关文档并注入上下文（不走向量，避免每条消息产生 embedding 成本） |
+| `plugin.ai_chat_bot.kb.embedding.enable` | `false` | 启用向量检索：入库时计算语义向量，检索时与关键词混合打分；provider 不支持时自动退回纯关键词 |
+| `plugin.ai_chat_bot.kb.embedding.base_url` | 空 | Embedding API 地址，留空使用主模型 Base URL（主模型无 embedding 接口时可填 `https://api.jina.ai/v1` 等） |
+| `plugin.ai_chat_bot.kb.embedding.api_key` | 空 | Embedding API 密钥，留空使用主模型 API Key（用 Jina 时可填 Jina AI Token） |
+| `plugin.ai_chat_bot.kb.embedding.model` | `jina-embeddings-v3` | Embedding 模型，如 `text-embedding-3-small`、`BAAI/bge-large-zh-v1.5` |
+
+长文档按 600 字符一块、60 字符重叠切片入库，检索命中块而非整篇，避免无关内容占用上下文。详见 [AI 对话插件](/guide/builtin-plugins#ai-对话插件)。
+
+### Agent 团队（team）
+
+多代理编排：主 AI 可组建团队，把子任务派发给多个带角色描述的成员代理**并行执行**：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.team.enable` | `false` | 启用后 AI 可通过 `team_run` / `team_save` 等工具组建与调用团队 |
+| `plugin.ai_chat_bot.team.timeout_sec` | `300` | 成员默认超时（秒） |
+| `plugin.ai_chat_bot.team.max_iterations` | `10` | 成员工具调用循环的最大轮数 |
+| `plugin.ai_chat_bot.team.max_result_len` | `4000` | 单成员返回结果最大字符数，超出截断防止污染汇总上下文 |
+| `plugin.ai_chat_bot.team.max_members` | `5` | 单次最多并行成员数（硬上限 10，防并发风暴） |
+
+团队成员复用子代理执行路径（独立一次性上下文、可独立配置模型），**不能递归组建团队**。详见 [AI 对话插件](/guide/builtin-plugins#ai-对话插件)。
+
+### 每日 Token 配额（quota）
+
+按「每会话每日」与「全局每日」两个维度限制 AI 消耗（含主对话、子代理、定时任务）：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.quota.enable` | `false` | 启用每日配额限制 |
+| `plugin.ai_chat_bot.quota.daily_tokens` | `0` | 每会话每日 token 上限；`0` 不限制，超出后该会话当日 AI 请求被拒绝 |
+| `plugin.ai_chat_bot.quota.global_daily_tokens` | `0` | 全局每日 token 上限；`0` 不限制，所有会话合计超限后全部拒绝 |
+
+计数按天持久化（键带日期天然过期），重启不丢；未设置上限时仍会记录用量，供面板「配额管理」页展示。
+
+### Query 日志（query_log）
+
+在面板记录每次 AI 回复的完整执行过程：
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.query_log.enable` | `true` | 启用 Query 日志 |
+| `plugin.ai_chat_bot.query_log.max_entries` | `200` | 日志保留条数（滚动覆盖） |
+
+每条日志包含：触发会话、发送者、用户输入、LLM 轮数、工具调用明细（名称/参数/结果/耗时）、token 用量与最终回复，状态区分 `running` / `success` / `stopped` / `timeout` / `error`。面板「Query 日志」页可筛选查看。
+
+### 流式回复（stream）
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.stream.enable` | `true` | 平台支持「先发后改」时（飞书卡片 / Telegram / Discord 消息实时更新）逐字展示回复；不支持或出错时自动退化为一次性回复 |
+
+### 重试、备用模型与压缩器
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.retry.max_attempts` | `3` | 应用层最大尝试次数；`0` 或 `1` 不重试。429 / 5xx / 网络错误时指数退避重试（SDK 已内置 429/5xx 重试，此为补充层） |
+| `plugin.ai_chat_bot.retry.base_delay_sec` | `2` | 退避基准（秒），每次重试等待 `基准×2^n` 秒并带随机抖动，上限 30 秒 |
+| `plugin.ai_chat_bot.fallback.base_url` | 空 | 备用模型 Base URL，留空使用主模型配置 |
+| `plugin.ai_chat_bot.fallback.api_key` | 空 | 备用模型 API Key，留空使用主模型配置 |
+| `plugin.ai_chat_bot.fallback.model` | 空 | 备用模型；主模型重试耗尽或遇到不可重试错误时自动切换重试一次（流式已输出首字节后不切换，避免重复输出） |
+| `plugin.ai_chat_bot.fallback.api_format` | 空 | 备用模型 API 格式，留空跟随主模型 |
+| `plugin.ai_chat_bot.compressor.base_url` | 空 | 上下文压缩器 Base URL，留空使用主模型 |
+| `plugin.ai_chat_bot.compressor.api_key` | 空 | 上下文压缩器 API Key |
+| `plugin.ai_chat_bot.compressor.model` | 空 | 压缩器模型，建议填更便宜的模型降低历史压缩成本 |
+| `plugin.ai_chat_bot.compressor.api_format` | 空 | 压缩器 API 格式，留空跟随主模型 |
+
 ## plugin.interceptor —— 请求拦截插件
 
 | 配置键 | 默认值 | 说明 |
@@ -349,4 +445,10 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 }
 ```
 
-MCP 工具采用两阶段懒加载：AI 先通过发现工具查看有哪些 MCP 能力，按需加载到当前会话，避免工具描述撑爆上下文。
+MCP 工具默认采用两阶段懒加载：AI 先通过发现工具查看有哪些 MCP 能力，按需加载到当前会话，避免工具描述撑爆上下文。
+
+| 配置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `plugin.ai_chat_bot.mcp.lazy_load` | `true` | MCP 工具懒加载：开启时按需发现/加载（`mcp_discover` / `mcp_load`），节省上下文；但会话内动态加载会改变 tools 列表，可能降低上游 prompt 缓存命中率。关闭后启动时全量注册所有 MCP 工具（工具列表恒定、缓存友好，但工具较多时上下文开销大） |
+| `plugin.ai_chat_bot.mcp_tool.enable` | `false` | 启用 AI MCP 管理工具（`mcp_list` / `mcp_add` / `mcp_remove` / `mcp_reconnect`），允许 AI 自行添加/删除/重连/查看 MCP 服务器；添加/删除写入 `files.mcp_json` 持久化并即时热注册/注销生效 |
+

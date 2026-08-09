@@ -66,6 +66,32 @@ export const api = {
 
   getSchema: () => request('/api/config/schema'),
   getConfig: () => request('/api/config'),
+  // 导出完整配置为 JSON 文件下载（含敏感字段真实值，需妥善保管）
+  async exportConfig() {
+    const resp = await fetch('/api/config/export', { credentials: 'same-origin' })
+    if (resp.status === 401) {
+      auth.loggedIn = false
+      throw new Error('未登录或会话已过期')
+    }
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}))
+      throw new Error(data.error || `请求失败 (${resp.status})`)
+    }
+    const blob = await resp.blob()
+    let filename = 'aniabot-config.json'
+    const cd = resp.headers.get('Content-Disposition')
+    const m = cd && cd.match(/filename="?([^";]+)"?/)
+    if (m) filename = m[1]
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
   saveConfig: (updates) =>
     request('/api/config', { method: 'PUT', body: JSON.stringify(updates) }),
 
@@ -95,6 +121,8 @@ export const api = {
   getQueryLogs: (params = {}) => request(`/api/querylogs${qs(params)}`),
   // 控制台日志分页查询：{ limit, before }（均可选），返回 { items, has_more }
   getConsoleLogs: (params = {}) => request(`/api/consolelogs${qs(params)}`),
+  // 操作日志分页查询：{ category, start, end, keyword, limit, before }（均可选），返回 { items, has_more }
+  getOpLogs: (params = {}) => request(`/api/oplogs${qs(params)}`),
   getClocks: () => request('/api/clocks'),
   // token 消耗监控指标：{ summary, today, daily[] }，含缓存命中率
   getTokenStats: () => request('/api/tokenstats'),
@@ -115,6 +143,7 @@ export const api = {
     request(`/api/clocks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   getSkills: () => request('/api/skills'),
+  getSkillDetail: (name) => request(`/api/skills/${encodeURIComponent(name)}`),
   // 上传 skill（zip 压缩包，multipart 表单，不走 JSON 请求封装）
   async uploadSkill(file) {
     const fd = new FormData()
