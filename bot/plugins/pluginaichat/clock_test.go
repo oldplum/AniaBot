@@ -120,11 +120,14 @@ func TestClockManagerCRUDAndPersist(t *testing.T) {
 
 	// Update 禁用
 	dis := false
-	if _, err := m.Update(id, ClockUpdateFields{Enabled: &dis}); err != nil {
+	if _, err := m.Update(id, ClockUpdateFields{Enabled: &dis}, "tester"); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
 	if g, _ := m.Get(id); g.Enabled {
 		t.Fatal("expected disabled")
+	}
+	if g, _ := m.Get(id); g.Updater != "tester" {
+		t.Fatalf("want updater=tester, got %q", g.Updater)
 	}
 
 	// ListByTarget 过滤
@@ -156,6 +159,42 @@ func TestClockManagerCRUDAndPersist(t *testing.T) {
 	m3 := newClockManager(p, 30*time.Second, 100)
 	if len(m3.List()) != 0 {
 		t.Fatal("expected 0 after reload following delete")
+	}
+}
+
+func TestClockUpdateCreatedBy(t *testing.T) {
+	p := &AIChatPlugin{}
+	p.Logger = slog.Default()
+	p.PersistentStorage = newPFake()
+
+	m := newClockManager(p, 30*time.Second, 100)
+	id, err := m.Add(&ClockTask{Cron: "@every 1h", Title: "喝水", Content: "提醒喝水", TargetType: "group", TargetID: "123", Enabled: true})
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// 纯数字创建者规范化为 qq: 前缀
+	creator := "456"
+	if _, err := m.Update(id, ClockUpdateFields{CreatedBy: &creator}, "tester"); err != nil {
+		t.Fatalf("Update created_by failed: %v", err)
+	}
+	if g, _ := m.Get(id); g.CreatedBy != "qq:456" {
+		t.Fatalf("want qq:456, got %q", g.CreatedBy)
+	}
+
+	// 非法值 "0" 应报错
+	zero := "0"
+	if _, err := m.Update(id, ClockUpdateFields{CreatedBy: &zero}, "tester"); err == nil {
+		t.Fatal("expected error for created_by=0")
+	}
+
+	// 空字符串清除创建者
+	empty := ""
+	if _, err := m.Update(id, ClockUpdateFields{CreatedBy: &empty}, "tester"); err != nil {
+		t.Fatalf("Update clear created_by failed: %v", err)
+	}
+	if g, _ := m.Get(id); g.CreatedBy != "" {
+		t.Fatalf("want empty created_by, got %q", g.CreatedBy)
 	}
 }
 
@@ -281,7 +320,7 @@ func TestRunOncePersistedAcrossReload(t *testing.T) {
 
 	// Update 可切换为重复任务
 	no := false
-	if _, err := m2.Update(loaded[0].ID, ClockUpdateFields{RunOnce: &no}); err != nil {
+	if _, err := m2.Update(loaded[0].ID, ClockUpdateFields{RunOnce: &no}, "tester"); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
 	m3 := newClockManager(p, 30*time.Second, 100)
@@ -327,7 +366,7 @@ func TestClockToolsScopeIsolation(t *testing.T) {
 
 	// 群 A 的工具视角
 	toolsA := newClockTools(m, clockTargetGroup, "123")
-	var delA, updA, logA, listA, createA llmtool.Tool
+	var delA, updA, logA, listA, createA, getA llmtool.Tool
 	for _, tool := range toolsA {
 		switch tool.Name() {
 		case "clock_delete":
@@ -340,7 +379,22 @@ func TestClockToolsScopeIsolation(t *testing.T) {
 			listA = tool
 		case "clock_create":
 			createA = tool
+		case "clock_get":
+			getA = tool
 		}
+	}
+
+	// 查看他群任务详情被拒绝
+	if _, err := getA.Execute(context.Background(), &clockGetParams{ID: tb}, llmtool.CallBackFuncs{}); err == nil || !strings.Contains(err.Error(), "无权操作") {
+		t.Fatalf("跨会话查看详情应被拒绝, err=%v", err)
+	}
+	// 查看本群任务详情成功，包含完整内容
+	detail, err := getA.Execute(context.Background(), &clockGetParams{ID: ta}, llmtool.CallBackFuncs{})
+	if err != nil {
+		t.Fatalf("本会话查看详情应成功: %v", err)
+	}
+	if !strings.Contains(detail, "A群任务") || !strings.Contains(detail, "内容") {
+		t.Fatalf("详情应包含标题与内容: %s", detail)
 	}
 
 	// 删除他群任务被拒绝

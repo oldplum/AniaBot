@@ -95,6 +95,7 @@ sequenceDiagram
         C->>P: Start(ctx, viper)（配置结构体已填充）
         C->>P: StartCron(ctx, bot, cron)
     end
+    Note over C,P: 收集 Go 钩子（agenthook.Handler）注入 pluginaichat
     Note over C: 1 秒后逐个 Awake
     C->>C: 启动 Web 控制面板（可选）
     alt 首次启动（设置向导未完成）
@@ -134,7 +135,7 @@ sequenceDiagram
     C->>C: 填充 SelfId、幂等去重、解析命令
     C->>PL: 按 Order 沿插件链分发（平台过滤 + 中间件阻断）
     PL->>AI: OnGroupMsg（最后执行，兜底响应）
-    AI->>AI: 会话锁 → 构建上下文 → 工具循环
+    AI->>AI: 审批回复拦截 → 会话锁 → 构建上下文（含钩子/清单/计划模式注入）→ 工具循环（含门禁）
     AI->>L: 多轮 LLM 调用（可穿插工具执行）
     L-->>AI: 最终文本
     AI->>C: bot.SendGroupMsg(群ID, chain)
@@ -145,7 +146,7 @@ sequenceDiagram
     P-->>U: 机器人回复
 ```
 
-出站方向的关键是 `route(id)`：根据 ID 前缀（`qo:` / `fs:` / `tg:` / `dc:`）找到对应适配器；裸数字 ID（QQ 历史数据）命中无前缀的默认适配器。这就是「插件拿到的 `bot.Bot` 是平台能力包装后的外观、但发送时 core 自动路由」的实现基础。
+出站方向的关键是 `route(id)`：根据 ID 前缀（`qq:` / `qo:` / `fs:` / `tg:` / `dc:`）找到对应适配器；旧版裸数字 QQ ID 仍会兼容回退到 QQ。这就是「插件拿到的 `bot.Bot` 是平台能力包装后的外观、但发送时 core 自动路由」的实现基础。
 
 ## 阅读建议
 

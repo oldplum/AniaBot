@@ -72,8 +72,14 @@
                   </template>
                   <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">超时时间</dt>
                   <dd class="text-zinc-700">{{ t.timeout_sec > 0 ? t.timeout_sec + ' 秒' : '默认' }}</dd>
-                  <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">创建者</dt>
-                  <dd class="text-zinc-700 font-mono">{{ t.created_by || '—' }}</dd>
+                  <template v-if="t.target_type === 'group' && t.created_by">
+                    <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">提醒 @</dt>
+                    <dd class="text-zinc-700 font-mono">{{ t.created_by }}</dd>
+                  </template>
+                  <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">创建人</dt>
+                  <dd class="text-zinc-700 font-mono">{{ fmtActor(t.creator) }}</dd>
+                  <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">更新人</dt>
+                  <dd class="text-zinc-700 font-mono">{{ fmtActor(t.updater) }}</dd>
                   <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">创建时间</dt>
                   <dd class="text-zinc-700">{{ fmtTimeFull(t.created_at) }}</dd>
                 </dl>
@@ -200,7 +206,12 @@
           <div class="mt-2 flex items-center gap-3 text-[11px] text-slate-400 font-mono flex-wrap">
             <span v-if="log.status !== 'running'">用时 {{ fmtDuration(log.duration_ms) }}</span>
             <span v-if="log.iterations">LLM {{ log.iterations }} 轮</span>
-            <span v-if="log.total_tokens">tokens {{ log.total_tokens }} ({{ log.prompt_tokens }}+{{ log.completion_tokens }})</span>
+            <template v-if="log.total_tokens">
+              <span>tokens 总计 {{ log.total_tokens }}</span>
+              <span>输入 {{ log.prompt_tokens }}</span>
+              <span>输出 {{ log.completion_tokens }}</span>
+              <span v-if="log.cached_tokens">缓存命中 {{ log.cached_tokens }}</span>
+            </template>
             <span v-if="log.error" class="text-red-500 truncate max-w-80">{{ log.error }}</span>
             <span class="ml-auto text-zinc-400">详情 ⤢</span>
           </div>
@@ -254,7 +265,10 @@
             <dd class="text-zinc-700 font-mono">{{ detail.iterations || '—' }}</dd>
             <dt class="text-[10px] tracking-[0.15em] uppercase text-zinc-400 self-center">Token 用量</dt>
             <dd class="text-zinc-700 font-mono">
-              {{ detail.total_tokens ? `${detail.total_tokens} (${detail.prompt_tokens}+${detail.completion_tokens})` : '—' }}
+              {{ detail.total_tokens
+                ? `总计 ${detail.total_tokens} · 输入 ${detail.prompt_tokens} · 输出 ${detail.completion_tokens}` +
+                  (detail.cached_tokens ? ` · 缓存命中 ${detail.cached_tokens}` : '')
+                : '—' }}
             </dd>
           </dl>
 
@@ -353,6 +367,10 @@
                 <input v-model.trim="clockForm.target_id" type="text" class="form-input" placeholder="如 123456 或 fs:oc_xxx" />
               </div>
             </div>
+            <div v-if="clockForm.target_type === 'group'">
+              <label class="form-label">提醒 @</label>
+              <input v-model.trim="clockForm.created_by" type="text" class="form-input" placeholder="触发时 @ 的用户 ID，如 qq:123456，留空不 @" />
+            </div>
             <div>
               <label class="form-label">备注</label>
               <input v-model.trim="clockForm.note" type="text" class="form-input" placeholder="可选，触发时附带给 AI" />
@@ -438,6 +456,7 @@ function blankClockForm() {
     timeout_sec: 0,
     note: '',
     run_once: false,
+    created_by: '',
   }
 }
 
@@ -458,6 +477,7 @@ function openEdit(t) {
     timeout_sec: t.timeout_sec || 0,
     note: t.note || '',
     run_once: t.run_once,
+    created_by: t.created_by || '',
   }
 }
 
@@ -479,6 +499,7 @@ async function saveClock() {
         target_type: f.target_type,
         target_id: f.target_id,
         run_once: f.run_once,
+        created_by: f.target_type === 'group' ? f.created_by : '',
       })
     } else {
       await api.createClock({
@@ -491,6 +512,7 @@ async function saveClock() {
         run_once: f.run_once,
         timeout_sec: f.timeout_sec || 0,
         note: f.note,
+        created_by: f.target_type === 'group' ? f.created_by : '',
       })
     }
     clockForm.value = null
@@ -587,6 +609,14 @@ function fmtDuration(ms) {
   if (!ms && ms !== 0) return '-'
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
+}
+
+// 操作人标识人性化：ai / panel 是固定标识，其余为用户 ID 原样展示
+function fmtActor(s) {
+  if (!s) return '—'
+  if (s === 'ai') return 'AI'
+  if (s === 'panel') return '面板'
+  return s
 }
 
 function statusText(s) {

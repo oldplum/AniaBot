@@ -11,8 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeanhua/AniaBot/bot/component/agenthook"
 	"github.com/jeanhua/AniaBot/bot/component/aichat"
 	"github.com/jeanhua/AniaBot/bot/component/llmtool"
+	"github.com/jeanhua/AniaBot/bot/component/querylog"
 	"github.com/jeanhua/AniaBot/bot/component/tasklog"
 	"github.com/jeanhua/AniaBot/common/bot"
 	"github.com/jeanhua/AniaBot/common/model/message"
@@ -45,11 +47,13 @@ type ClockTask struct {
 	Title      string      `json:"title"`       // 任务标题
 	Content    string      `json:"content"`     // 任务内容，触发时作为对话内容发送给 AI
 	TargetType string      `json:"target_type"` // group / friend
-	TargetID   string      `json:"target_id"`   // 目标会话 ID（QQ 为数字，其他平台带前缀）
+	TargetID   string      `json:"target_id"`   // 目标会话 ID（QQ 为 qq: 前缀，其他平台带各自前缀）
 	Enabled    bool        `json:"enabled"`
-	RunOnce    bool        `json:"run_once"`    // 单次任务：触发执行完成后自动销毁
-	TimeoutSec int         `json:"timeout_sec"` // 单次执行超时秒数，<=0 用默认值
-	CreatedBy  message.QID `json:"created_by"`  // 创建者 ID（用于群聊 @ 提醒），空表示无
+	RunOnce    bool        `json:"run_once"`          // 单次任务：触发执行完成后自动销毁
+	TimeoutSec int         `json:"timeout_sec"`       // 单次执行超时秒数，<=0 用默认值
+	CreatedBy  message.QID `json:"created_by"`        // @ 提醒对象 ID（群聊触发时 @ 该成员；仅群任务有意义，私聊任务为空），空表示不 @
+	Creator    string      `json:"creator,omitempty"` // 创建人标识：用户 ID / ai / panel，空表示未知（早期数据无此字段）
+	Updater    string      `json:"updater,omitempty"` // 最近更新人标识：用户 ID / ai / panel，空表示创建后未被更新过
 	Note       string      `json:"note,omitempty"`
 	CreatedAt  time.Time   `json:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at"`
@@ -68,6 +72,7 @@ type ClockUpdateFields struct {
 	RunOnce    *bool
 	TimeoutSec *int
 	Note       *string
+	CreatedBy  *string // 群任务触发时 @ 的用户 ID，空字符串表示不再 @
 }
 
 // clockManager AI 定时任务调度器：持久化 + 调度 + 触发执行 + 执行日志。
@@ -143,6 +148,8 @@ func (m *clockManager) taskInfos() []plugininfo.ClockTaskInfo {
 			RunOnce:    t.RunOnce,
 			TimeoutSec: t.TimeoutSec,
 			CreatedBy:  t.CreatedBy.String(),
+			Creator:    t.Creator,
+			Updater:    t.Updater,
 			CreatedAt:  t.CreatedAt,
 			LastRunAt:  t.LastRunAt,
 			NextRunAt:  t.NextRunAt,
@@ -164,6 +171,13 @@ func (p *AIChatPlugin) CreateClockTask(c plugininfo.ClockTaskCreate) (string, er
 	if p.clockManager == nil {
 		return "", fmt.Errorf("定时任务功能未启用")
 	}
+	var creator message.QID
+	if s := strings.TrimSpace(c.CreatedBy); s != "" {
+		if s == "0" {
+			return "", fmt.Errorf("created_by 必须是用户 ID")
+		}
+		creator = parseQID(s)
+	}
 	return p.clockManager.Add(&ClockTask{
 		Cron:       c.Cron,
 		Title:      c.Title,
@@ -174,6 +188,8 @@ func (p *AIChatPlugin) CreateClockTask(c plugininfo.ClockTaskCreate) (string, er
 		RunOnce:    c.RunOnce,
 		TimeoutSec: c.TimeoutSec,
 		Note:       c.Note,
+		CreatedBy:  creator,
+		Creator:    "panel",
 	})
 }
 
@@ -192,7 +208,8 @@ func (p *AIChatPlugin) UpdateClockTask(id string, f plugininfo.ClockTaskUpdate) 
 		TargetType: f.TargetType,
 		TargetID:   f.TargetID,
 		RunOnce:    f.RunOnce,
-	})
+		CreatedBy:  f.CreatedBy,
+	}, "panel")
 	return err
 }
 
@@ -307,8 +324,9 @@ func (m *clockManager) Add(t *ClockTask) (string, error) {
 	return t.ID, nil
 }
 
-// Update 按字段更新任务并重新调度。
-func (m *clockManager) Update(id string, f ClockUpdateFields) (*ClockTask, error) {
+// Update 按字段更新任务并重新调度。actor 为操作人标识（用户 ID / ai / panel），
+// 非空时记录为最近更新人。
+func (m *clockManager) Update(id string, f ClockUpdateFields, actor string) (*ClockTask, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -352,6 +370,17 @@ func (m *clockManager) Update(id string, f ClockUpdateFields) (*ClockTask, error
 	}
 	if f.Note != nil {
 		nt.Note = *f.Note
+	}
+	if f.CreatedBy != nil {
+		s := strings.TrimSpace(*f.CreatedBy)
+		if s == "0" {
+			return nil, fmt.Errorf("created_by 必须是用户 ID")
+		}
+		// 空字符串清除创建者（触发时不再 @）；纯数字规范化为 qq: 前缀
+		nt.CreatedBy = parseQID(s)
+	}
+	if actor != "" {
+		nt.Updater = actor
 	}
 	nt.UpdatedAt = time.Now()
 	m.tasks[id] = &nt
@@ -697,8 +726,18 @@ func (m *clockManager) executeTask(ctx context.Context, task *ClockTask, rec *ta
 		chat.SetToolObserver(rec.observe)
 	}
 
+	// 钩子与工具门禁（AgentKind=clock；审批仅管理员可批，管理员审批提示私聊
+	// 发给管理员，回退时发送到任务目标会话）
+	if p.hookManager != nil {
+		chat.SetHookRunner(p.hookManager, sessionKey(targetQID, isGroup), agenthook.AgentKindClock)
+	}
+
 	cbs := m.makeClockCallback(ctx, task, extra.add)
-	resp, usage, err := chat.Chat(ctx, m.buildTriggerPrompt(task), cbs, p.buildChatOptions())
+	chatOpts := p.buildChatOptions()
+	chatOpts.PreToolGate = p.buildPreToolGate(sessionKey(targetQID, isGroup), agenthook.AgentKindClock, message.FromUint64(0),
+		func(text string) { m.sendText(task, text) },
+		p.buildAdminPromptSender(m.bot))
+	resp, usage, err := chat.Chat(ctx, m.buildTriggerPrompt(task), cbs, chatOpts)
 	if err != nil {
 		// 失败路径同样并入已产生的派生用量（子代理可能已部分执行）
 		return "", mergeTokenUsage(usage, extra.take()), err
@@ -717,6 +756,14 @@ func (m *clockManager) executeTask(ctx context.Context, task *ClockTask, rec *ta
 	// 中途碎片的非预期消息。工具主动调用的图片/文件仍正常发送。
 	if strings.TrimSpace(resp) != "" {
 		m.sendText(task, resp)
+	}
+	// Stop 钩子（仅通知）：定时任务一次完整执行结束
+	if p.hookManager != nil {
+		p.hookManager.Run(ctx, agenthook.EventStop, agenthook.Payload{
+			SessionKey: sessionKey(targetQID, isGroup),
+			AgentKind:  agenthook.AgentKindClock,
+			Prompt:     querylog.Truncate(resp, 1000),
+		})
 	}
 	return resp, usage, nil
 }
@@ -826,6 +873,17 @@ func (m *clockManager) makeClockCallback(ctx context.Context, task *ClockTask, u
 				usageSink(usage)
 			}
 			return desc, err
+		}
+	}
+	// 命令级人工审批（bash 三段式）：定时任务无人值守，requester=0 即仅管理员可批；
+	// 审批提示发到任务目标会话。仅在工具审批开关开启时注入：审批关闭时
+	// approvalManager 可能仅为配置修改工具构造，bash 未列名命令默认放行（只认黑名单）。
+	if p := m.plugin; p.cfg.Approval.Enable && p.approvalManager != nil {
+		targetQID := qid
+		targetIsGroup := isGroup
+		cbs.RequestApproval = func(ctx context.Context, toolName, summary string) (bool, string) {
+			return p.approvalManager.request(ctx, sessionKey(targetQID, targetIsGroup), toolName, summary, message.FromUint64(0),
+				func(text string) { m.sendText(task, text) })
 		}
 	}
 	return cbs

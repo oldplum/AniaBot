@@ -64,7 +64,11 @@ func newClockTools(mgr *clockManager, defType string, defID string) []llmtool.To
 			clockToolBase: base,
 		},
 		&clockListTool{
-			BaseTool:      llmtool.MakeBaseTool("clock_list", "列出定时任务。当前会话为"+sessionDesc+"，不传参数默认列出当前会话的任务", clockListParams{}),
+			BaseTool:      llmtool.MakeBaseTool("clock_list", "列出定时任务（仅摘要，完整详情用clock_get）。当前会话为"+sessionDesc+"，不传参数默认列出当前会话的任务", clockListParams{}),
+			clockToolBase: base,
+		},
+		&clockGetTool{
+			BaseTool:      llmtool.MakeBaseTool("clock_get", "按ID查看定时任务的完整详情，包括任务内容、备注、超时、下次触发时间等", clockGetParams{}),
 			clockToolBase: base,
 		},
 		&clockUpdateTool{
@@ -89,8 +93,8 @@ type clockCreateParams struct {
 	Title      string `json:"title" desc:"任务标题，简短描述任务目的"`
 	Content    string `json:"content" desc:"任务内容，触发时作为对话内容发送给AI，应写清完整可执行的指令"`
 	TargetType string `json:"target_type,omitempty" desc:"触发对象类型 group(群聊)/friend(私聊)，不填默认当前会话"`
-	TargetID   string `json:"target_id,omitempty" desc:"触发对象ID（QQ 为群号/QQ号，其他平台为带前缀的ID，如 fs:oc_xxx），不填默认当前会话"`
-	CreatedBy  string `json:"created_by,omitempty" desc:"群聊任务触发时要@的用户ID（QQ 为数字QQ号，其他平台为带前缀的ID，如 fs:ou_xxx），一般填当前让你创建任务的群成员（其消息以 [nickname:昵称 id:用户ID] 开头，取其中的id）；不填则触发时不@任何人；私聊任务无需填写"`
+	TargetID   string `json:"target_id,omitempty" desc:"触发对象ID（QQ 为 qq:群号/QQ号，其他平台为带前缀的ID，如 fs:oc_xxx），不填默认当前会话"`
+	CreatedBy  string `json:"created_by,omitempty" desc:"群聊任务触发时要@的用户ID（QQ 为 qq:QQ号，其他平台为带前缀的ID，如 fs:ou_xxx），一般填当前让你创建任务的群成员（其消息以 [nickname:昵称 id:用户ID] 开头，取其中的id）；不填则触发时不@任何人；私聊任务无需填写"`
 	RunOnce    bool   `json:"run_once,omitempty" desc:"是否为单次任务：true表示触发执行一次后自动销毁，false(默认)为重复执行"`
 	TimeoutSec int    `json:"timeout_sec,omitempty" desc:"单次执行超时秒数，不填用默认值"`
 	Note       string `json:"note,omitempty" desc:"备注信息"`
@@ -126,6 +130,7 @@ func (t *clockCreateTool) Execute(_ context.Context, params any, _ llmtool.CallB
 		Note:       p.Note,
 		Enabled:    true,
 		CreatedBy:  creator,
+		Creator:    "ai",
 	}
 	id, err := t.mgr.Add(task)
 	if err != nil {
@@ -175,6 +180,33 @@ func (t *clockListTool) Execute(_ context.Context, params any, _ llmtool.CallBac
 	return sb.String(), nil
 }
 
+// ---- clock_get ----
+
+type clockGetParams struct {
+	ID string `json:"id" desc:"任务ID"`
+}
+
+type clockGetTool struct {
+	llmtool.BaseTool[clockGetParams]
+	clockToolBase
+}
+
+func (t *clockGetTool) Execute(_ context.Context, params any, _ llmtool.CallBackFuncs) (string, error) {
+	p := params.(*clockGetParams)
+	if strings.TrimSpace(p.ID) == "" {
+		return "", fmt.Errorf("id 不能为空")
+	}
+	task, ok := t.mgr.Get(p.ID)
+	if !ok {
+		return "", fmt.Errorf("定时任务不存在: %s", p.ID)
+	}
+	// 归属校验：只能查看当前会话的任务
+	if err := t.checkTaskOwned(task); err != nil {
+		return "", err
+	}
+	return formatTaskDetail(task), nil
+}
+
 // ---- clock_update ----
 
 type clockUpdateParams struct {
@@ -188,6 +220,7 @@ type clockUpdateParams struct {
 	RunOnce    *bool   `json:"run_once,omitempty" desc:"是否改为单次任务（true=触发一次后销毁，false=重复执行）"`
 	TimeoutSec *int    `json:"timeout_sec,omitempty" desc:"新的超时秒数"`
 	Note       *string `json:"note,omitempty" desc:"新的备注"`
+	CreatedBy  *string `json:"created_by,omitempty" desc:"新的@提醒用户ID（仅群聊任务生效，格式同 clock_create），传空字符串表示触发时不再@任何人"`
 }
 
 type clockUpdateTool struct {
@@ -231,8 +264,9 @@ func (t *clockUpdateTool) Execute(_ context.Context, params any, _ llmtool.CallB
 		RunOnce:    p.RunOnce,
 		TimeoutSec: p.TimeoutSec,
 		Note:       p.Note,
+		CreatedBy:  p.CreatedBy,
 	}
-	task, err := t.mgr.Update(p.ID, f)
+	task, err := t.mgr.Update(p.ID, f, "ai")
 	if err != nil {
 		return "", err
 	}

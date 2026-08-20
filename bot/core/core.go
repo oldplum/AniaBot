@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/jeanhua/AniaBot/bot/adminpanel"
+	"github.com/jeanhua/AniaBot/bot/component/agenthook"
 	"github.com/jeanhua/AniaBot/bot/component/consollog"
 	"github.com/jeanhua/AniaBot/bot/component/msglog"
 	"github.com/jeanhua/AniaBot/bot/component/oplog"
@@ -78,9 +79,32 @@ const (
 	StartCronEventTimeout = time.Minute
 	AwakeEventTimeout     = time.Minute
 
+	// MsgEventTimeout 单条消息事件处理超时的默认值（bot.msg_event_timeout_sec
+	// 未配置/非法时的兜底）；实际超时见 AniaBot.msgEventTimeout
 	MsgEventTimeout    = time.Minute * 5
 	NoticeEventTimeout = time.Minute * 5
+
+	// msgEventMaxTimeoutSec 消息处理超时的配置上限（秒）：先限幅 int 再乘
+	// time.Second，防止超大配置值 int64 溢出为负 duration（context 立即过期）
+	msgEventMaxTimeoutSec = 86400
 )
+
+// msgEventTimeout 单条消息事件（如一次 AI 回复）的处理超时：取面板配置
+// bot.msg_event_timeout_sec，缺失/非法时兜底 MsgEventTimeout（5 分钟）。
+// 每次事件读取，配置在重启后随 viper 快照生效。
+func (ania *AniaBot) msgEventTimeout() time.Duration {
+	sec := 0
+	if ania.cfg != nil { // 测试等场景下未注入配置时直接走默认值
+		sec = ania.cfg.GetInt("bot.msg_event_timeout_sec")
+	}
+	if sec <= 0 {
+		return MsgEventTimeout
+	}
+	if sec > msgEventMaxTimeoutSec {
+		sec = msgEventMaxTimeoutSec
+	}
+	return time.Duration(sec) * time.Second
+}
 
 //go:embed logo.txt
 var LogoASCII string
@@ -170,8 +194,8 @@ func (ania *AniaBot) makeTrigger(e *adapterEntry) adapter.TriggerWrapper {
 	}
 }
 
-// route 按统一 ID 前缀路由到对应平台适配器；未命中任何前缀时回退到
-// 无前缀的默认适配器（QQ 历史裸数字 ID 兼容）。
+// route 按统一 ID 前缀路由到对应平台适配器；未迁移的裸数字 QQ ID
+// 仍回退到 QQ 平台，保证升级期间兼容旧数据。
 func (ania *AniaBot) route(id message.QID) adapter.Adapter {
 	if len(ania.adapters) == 0 {
 		return nil
@@ -180,6 +204,14 @@ func (ania *AniaBot) route(id message.QID) adapter.Adapter {
 	for _, e := range ania.adapters {
 		if e.def.IDPrefix != "" && strings.HasPrefix(s, e.def.IDPrefix) {
 			return e.adapter
+		}
+	}
+	// 旧版 QQ 无前缀数字 ID 兼容：未迁移时仍路由到 QQ（NapCat）。
+	if message.NormalizeQQID(string(id)) != string(id) {
+		for _, e := range ania.adapters {
+			if e.def.Platform == "qq" {
+				return e.adapter
+			}
 		}
 	}
 	for _, e := range ania.adapters {
@@ -230,6 +262,13 @@ func (ania *AniaBot) Run() {
 			os.Exit(1)
 		}
 		ania.persistent = store
+	}
+
+	// 旧版 QQ ID 为裸数字，升级后统一迁移到 qq: 前缀。
+	// 必须在配置中心读取前执行，保证 admin_id、插件配置和 AI 持久化数据
+	// 都以新 ID 格式加载。
+	if err := migrateQQIDPrefix(context.Background(), ania.persistent, Logger().WithGroup("Migration")); err != nil {
+		Logger().Error("QQ ID 前缀迁移失败，部分旧数据可能仍是无前缀格式", "error", err)
 	}
 
 	// 操作日志（面板「操作日志」页数据源）：记录面板与 AI 工具的管理操作，
@@ -345,6 +384,24 @@ func (ania *AniaBot) Run() {
 			logError(err, p, "初始化")
 			cancel()
 		})
+	}
+
+	// 收集实现了 agenthook.Handler 的插件（AI 代理生命周期 Go 钩子），注入给实现
+	// agenthook.HandlerRegistry 的插件（AI 对话插件）——与 startAdminPanel 的
+	// 「可选接口 + 类型断言」source 收集同款惯例
+	var hookHandlers []agenthook.Handler
+	for _, p := range ania.plugins {
+		if h, ok := p.(agenthook.Handler); ok {
+			hookHandlers = append(hookHandlers, h)
+		}
+	}
+	if len(hookHandlers) > 0 {
+		for _, p := range ania.plugins {
+			if r, ok := p.(agenthook.HandlerRegistry); ok {
+				r.SetGoHookHandlers(hookHandlers)
+			}
+		}
+		Logger().Info("已注入 AI 代理 Go 钩子", "handlers", len(hookHandlers))
 	}
 
 	// 初始化cron
@@ -464,12 +521,16 @@ func (ania *AniaBot) startAdminPanel() {
 		}
 	}
 
-	// 面板的 QQ 专属能力来源（群/好友列表）：默认适配器若实现了 QQ 能力则提供
-	var qq bot.QQ
+	// 面板通讯录来源（群/好友列表）：收集所有实现 adapter.ContactsExt 的适配器，
+	// 支持多平台并列展示；无枚举 API 的平台（Telegram、QQ 官方）自然缺席。
+	contacts := make([]adminpanel.ContactSource, 0, len(ania.adapters))
 	for _, e := range ania.adapters {
-		if qb, ok := e.evBot.(bot.QQ); ok {
-			qq = qb
-			break
+		if ce, ok := e.adapter.(adapter.ContactsExt); ok {
+			contacts = append(contacts, adminpanel.ContactSource{
+				Name:     e.def.Name,
+				Platform: e.def.Platform,
+				Contacts: ce,
+			})
 		}
 	}
 
@@ -478,7 +539,7 @@ func (ania *AniaBot) startAdminPanel() {
 		Config:     ania.configStore,
 		Persistent: ania.persistent,
 		Bot:        ania,
-		QQ:         qq,
+		Contacts:   contacts,
 		Adapter: func() string {
 			if ania.configStore != nil && ania.configStore.SetupPending() {
 				return "setup_pending"
@@ -615,7 +676,7 @@ func (ania *AniaBot) onGroupEvent(e *adapterEntry, msg message.Message) {
 			continue
 		}
 		next, panicked := safeExecuteWithReturn("群聊消息事件", p, func(p plugin.Plugin) bool {
-			msgCtx, cancel := context.WithTimeout(ania.ctx, MsgEventTimeout)
+			msgCtx, cancel := context.WithTimeout(ania.ctx, ania.msgEventTimeout())
 			next, err := p.OnGroupMsg(msgCtx, e.evBot, cmd, msg)
 			logError(err, p, "群聊消息事件")
 			cancel()
@@ -652,7 +713,7 @@ func (ania *AniaBot) onFriendEvent(e *adapterEntry, msg message.Message) {
 			continue
 		}
 		next, panicked := safeExecuteWithReturn("私聊消息事件", p, func(p plugin.Plugin) bool {
-			msgCtx, cancel := context.WithTimeout(ania.ctx, MsgEventTimeout)
+			msgCtx, cancel := context.WithTimeout(ania.ctx, ania.msgEventTimeout())
 			next, err := p.OnFriendMsg(msgCtx, e.evBot, cmd, msg)
 			logError(err, p, "私聊消息事件")
 			cancel()

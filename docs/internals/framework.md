@@ -64,7 +64,7 @@ flowchart LR
 type QID string // 提供 String() / Uint64()
 ```
 
-- **QQ 历史裸数字 ID 无前缀**：存量数据零迁移，未命中任何前缀的 ID 自动路由到无前缀的默认适配器
+- **QQ 统一带 `qq:` 前缀**：旧版裸数字数据在启动时自动迁移，未迁移的裸数字 ID 仍兼容回退到 QQ
 - 其他平台统一带前缀：QQ 官方 `qo:`、飞书 `fs:`、Telegram `tg:`（消息 ID 为 `tg:<chat_id>:<message_id>`）、Discord `dc:<channel_id>:<message_id>`
 - 前缀在适配器的 `Definition.IDPrefix` 中声明，注册时**重复前缀直接 panic**（启动期编程错误）
 
@@ -117,7 +117,7 @@ func (ania *AniaBot) addAdapter(def adapter.Definition, a adapter.Adapter) {
 type Definition struct {
     Name         string                  // 适配器名，启用键 bot.platform.<name>.enable
     Platform     string                  // 平台标识（"qq" / "feishu" / ...），写入事件 Platform
-    IDPrefix     string                  // ID 前缀（"fs:" / "tg:" / "dc:"），空 = 无前缀默认平台
+    IDPrefix     string                  // ID 前缀（"qq:" / "fs:" / "tg:" / "dc:"）
     ConfigFields []pluginconfig.Field    // 面板动态渲染的配置字段
     New          func(*viper.Viper) (Adapter, error)
 }
@@ -148,7 +148,7 @@ flowchart TB
     E --> F[按 Order 遍历插件]
     F --> G{supportsPlatform?}
     G -->|否| H[跳过]
-    G -->|是| I[safeExecute 包裹执行<br/>MsgEventTimeout = 5min]
+    G -->|是| I[safeExecute 包裹执行<br/>msgEventTimeout 默认 5min 可配]
     I --> J{返回 false?}
     J -->|是| K[阻断，停止传播]
     J -->|否| F
@@ -175,7 +175,7 @@ func (ania *AniaBot) onGroupEvent(e *adapterEntry, msg message.Message) {
             continue
         }
         next, panicked := safeExecuteWithReturn("群聊消息事件", p, func(p plugin.Plugin) bool {
-            msgCtx, cancel := context.WithTimeout(ania.ctx, MsgEventTimeout)
+            msgCtx, cancel := context.WithTimeout(ania.ctx, ania.msgEventTimeout())
             next, err := p.OnGroupMsg(msgCtx, e.evBot, cmd, msg) // e.evBot = 能力包装外观
             logError(err, p, "群聊消息事件")
             cancel()
@@ -195,7 +195,7 @@ func (ania *AniaBot) onGroupEvent(e *adapterEntry, msg message.Message) {
 
 - **SelfId 兜底**：`fillSelfID` 仅在事件没带 `self_id` 时调用适配器的 `adapter.SelfIDProvider.SelfID()`（如飞书首次被 @ 前的空窗期），保证自消息过滤与 @ 提及检测（`at` 段 `Data["qq"]` 与 `SelfId` 精确比较）永远有效
 - **命令只解析一次**：`ParseCommand` 在分发前完成，所有插件收到同一个 `command.Command`，避免每个插件重复解析文本
-- **超时按插件独立**：每个插件调用都 `context.WithTimeout(MsgEventTimeout)`（消息 5 分钟、通知 5 分钟、生命周期事件 1 分钟），即使某个插件阻塞到超时，其余插件仍按顺序执行
+- **超时按插件独立**：每个插件调用都 `context.WithTimeout(...)`（消息处理默认 5 分钟，面板 `bot.msg_event_timeout_sec` 可调；通知 5 分钟、生命周期事件 1 分钟），即使某个插件阻塞到超时，其余插件仍按顺序执行
 - **`e.evBot` 是事件来源适配器的能力外观**：分发前由 `addAdapter` 用 `adapter.WrapBot(ania, a)` 包装，插件在回调里类型断言 `bot.QQ` / `bot.StreamSender` 探测的就是它
 
 ### 幂等去重
@@ -289,6 +289,8 @@ AddPlugin() → 按 Order 排序
 | `ConfigEditor` | `plugin.ConfigEditor` | 配置中心读写（可能为 nil，需判空） |
 
 注入实现是 `Meta.SetStorage(...)` 等 setter；`ConfigSchema()` / `ConfigFields()` 在 DI **之前**被调用（纯元信息声明，实现不得依赖注入字段，且必须每次返回同一指针）。
+
+除启动前 DI 外，core 在全部插件 `Start` 完成后还有一轮**可选接口收集**（类型断言惯例，与面板 `XxxSource` 能力发现同款）：实现 `agenthook.Handler` 的插件会被收集为 AI 代理 Go 钩子，注入给实现 `agenthook.HandlerRegistry` 的插件（pluginaichat），见 [AI 引擎（三）](/internals/agent-tools#钩子系统-hooks)。
 
 ### 并发模型
 
@@ -428,7 +430,7 @@ type StreamHandle interface {
 
 ## 进程自重启（sysrestart）
 
-面板「重启 Bot」按钮、自动更新与 AI 的 `restart_bot` 工具共用 `bot/component/sysrestart.Self()`，实现极简但有一个关键陷阱：
+面板「重启 Bot」按钮、自动更新与系统插件的 `/reboot` 命令（仅管理员）共用 `bot/component/sysrestart.Self()`，实现极简但有一个关键陷阱：
 
 - **Unix**：`syscall.Exec(exe, os.Args, os.Environ())` **原地替换进程**——PID 不变、文件句柄与控制台无缝衔接，重启对用户几乎无感
 - **Windows**：没有 exec 语义，`exec.Command` 启动新进程（继承控制台与标准流）后 `os.Exit(0)`
