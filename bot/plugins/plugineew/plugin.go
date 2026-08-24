@@ -183,27 +183,29 @@ func (p *EEWPlugin) broadcastWeatherCron(b bot.Bot) {
 	groups := p.cfg.WeatherCronGroups
 	friends := p.cfg.WeatherCronFriends
 
-	for _, group := range groups {
-		if group <= 0 {
+	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		if g == "" {
 			continue
 		}
-		gid := message.FromUint64(uint64(group))
+		gid := message.FromString(g)
 		builder := msgchain.Builder().Group()
 		builder.Text(text)
 		if _, ok := b.SendGroupMsg(gid, builder.Build()); ok {
-			p.Logger.Info("定时气象实况成功播报至群聊", "group", group)
+			p.Logger.Info("定时气象实况成功播报至群聊", "group", gid)
 		}
 	}
 
-	for _, friend := range friends {
-		if friend <= 0 {
+	for _, f := range friends {
+		f = strings.TrimSpace(f)
+		if f == "" {
 			continue
 		}
-		fid := message.FromUint64(uint64(friend))
+		fid := message.FromString(f)
 		builder := msgchain.Builder().Friend()
 		builder.Text(text)
 		if _, ok := b.SendFriendMsg(fid, builder.Build()); ok {
-			p.Logger.Info("定时气象实况成功播报至好友", "friend", friend)
+			p.Logger.Info("定时气象实况成功播报至好友", "friend", fid)
 		}
 	}
 }
@@ -715,33 +717,35 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 
 func (p *EEWPlugin) broadcast(b bot.Bot, text string, atAll bool) {
 	for _, group := range p.cfg.Groups {
-		if group <= 0 {
+		group = strings.TrimSpace(group)
+		if group == "" {
 			continue
 		}
-		gid := message.FromUint64(uint64(group))
+		gid := message.FromString(group)
 		builder := msgchain.Builder().Group()
 		if atAll {
 			builder.Mention(message.FromString("all")).Text("\n")
 		}
 		builder.Text(text)
 		if _, ok := b.SendGroupMsg(gid, builder.Build()); ok {
-			p.Logger.Info("地震预警成功推送至群聊", "group", group, "at_all", atAll)
+			p.Logger.Info("地震预警成功推送至群聊", "group", gid, "at_all", atAll)
 		} else {
-			p.Logger.Error("地震预警推送至群聊失败", "group", group)
+			p.Logger.Error("地震预警推送至群聊失败", "group", gid)
 		}
 	}
 
 	for _, friend := range p.cfg.Friends {
-		if friend <= 0 {
+		friend = strings.TrimSpace(friend)
+		if friend == "" {
 			continue
 		}
-		fid := message.FromUint64(uint64(friend))
+		fid := message.FromString(friend)
 		builder := msgchain.Builder().Friend()
 		builder.Text(text)
 		if _, ok := b.SendFriendMsg(fid, builder.Build()); ok {
-			p.Logger.Info("地震预警成功推送至好友", "friend", friend)
+			p.Logger.Info("地震预警成功推送至好友", "friend", fid)
 		} else {
-			p.Logger.Error("地震预警推送至好友失败", "friend", friend)
+			p.Logger.Error("地震预警推送至好友失败", "friend", fid)
 		}
 	}
 }
@@ -820,8 +824,20 @@ func (p *EEWPlugin) replyStatus(b bot.Bot, target message.QID, isGroup bool) {
 		sb.WriteString(fmt.Sprintf("夜间静音: %s ~ %s (放行 M≥%.1f)\n", p.cfg.QuietHoursStart, p.cfg.QuietHoursEnd, p.cfg.QuietMinMagnitude))
 	}
 	sb.WriteString(fmt.Sprintf("最近心跳/数据: %s\n", lastMsg))
-	sb.WriteString(fmt.Sprintf("目标群组数: %d 个\n", len(p.cfg.Groups)))
-	sb.WriteString(fmt.Sprintf("目标好友数: %d 个", len(p.cfg.Friends)))
+	groupCount := 0
+	for _, g := range p.cfg.Groups {
+		if strings.TrimSpace(g) != "" {
+			groupCount++
+		}
+	}
+	friendCount := 0
+	for _, f := range p.cfg.Friends {
+		if strings.TrimSpace(f) != "" {
+			friendCount++
+		}
+	}
+	sb.WriteString(fmt.Sprintf("目标群组数: %d 个\n", groupCount))
+	sb.WriteString(fmt.Sprintf("目标好友数: %d 个", friendCount))
 
 	p.sendMsg(b, target, isGroup, sb.String())
 }

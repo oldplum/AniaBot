@@ -11,14 +11,14 @@ type eewConfig struct {
 	MinMagnitude   float64 `cfg:"plugin.eew.min_magnitude" label:"最小推送震级" group:"基础设置" help:"低于此震级的预警将被过滤不推送" default:"3.0"`
 	MinIntensity   int     `cfg:"plugin.eew.min_intensity" label:"最小预估烈度" group:"基础设置" help:"预估烈度低于此值的预警不推送(0表示不过滤)" default:"0"`
 	PushStrategy   string  `cfg:"plugin.eew.push_strategy" label:"推送策略" type:"select" options:"first_and_final,all,first_only" group:"基础设置" help:"first_and_final: 仅推送首报与最终报(默认); all: 逐报全量推送; first_only: 仅推送首报" default:"first_and_final"`
-	Groups         []int   `cfg:"plugin.eew.groups" label:"推送群号列表" group:"基础设置" help:"接收预警推送的 QQ 群号，多个群号用逗号或多行分隔"`
-	Friends        []int   `cfg:"plugin.eew.friends" label:"推送好友QQ列表" group:"基础设置" help:"接收预警推送的好友 QQ 号，多个 QQ 号用逗号或多行分隔"`
+	Groups         []string `cfg:"plugin.eew.groups" label:"推送群号列表" group:"基础设置" help:"接收预警推送的群 ID，每行一个（QQ为纯群号或qq:群号，其他平台如tg:-100xxx）"`
+	Friends        []string `cfg:"plugin.eew.friends" label:"推送好友QQ列表" group:"基础设置" help:"接收预警推送的好友 ID，每行一个（QQ为纯QQ号或qq:QQ号，其他平台如tg:123xxx）"`
 
 	// 气象定时播报
-	WeatherCronEnable  bool   `cfg:"plugin.eew.weather_cron_enable" label:"开启气象定时播报" group:"气象定时播报" default:"false"`
-	WeatherCron        string `cfg:"plugin.eew.weather_cron" label:"Cron 表达式" group:"气象定时播报" help:"Cron 表达式，例如 '0 8,12,18 * * *' 表示每天早8点、中午12点、晚6点播报" default:"0 8,12,18 * * *"`
-	WeatherCronGroups  []int  `cfg:"plugin.eew.weather_cron_groups" label:"播报群号列表" group:"气象定时播报" help:"接收气象定时播报的群号，多个群号用逗号或多行分隔；留空则不向任何群推送"`
-	WeatherCronFriends []int  `cfg:"plugin.eew.weather_cron_friends" label:"播报好友QQ列表" group:"气象定时播报" help:"接收气象定时播报的好友QQ，多个QQ号用逗号或多行分隔；留空则不向任何好友推送"`
+	WeatherCronEnable  bool     `cfg:"plugin.eew.weather_cron_enable" label:"开启气象定时播报" group:"气象定时播报" default:"false"`
+	WeatherCron        string   `cfg:"plugin.eew.weather_cron" label:"Cron 表达式" group:"气象定时播报" help:"Cron 表达式，例如 '0 8,12,18 * * *' 表示每天早8点、中午12点、晚6点播报" default:"0 8,12,18 * * *"`
+	WeatherCronGroups  []string `cfg:"plugin.eew.weather_cron_groups" label:"播报群号列表" group:"气象定时播报" help:"接收气象定时播报的群 ID，每行一个；留空则不向任何群推送"`
+	WeatherCronFriends []string `cfg:"plugin.eew.weather_cron_friends" label:"播报好友QQ列表" group:"气象定时播报" help:"接收气象定时播报的好友 ID，每行一个；留空则不向任何好友推送"`
 
 	// 地区关注设置
 	FocusMode     string   `cfg:"plugin.eew.focus_mode" label:"地区过滤模式" type:"select" options:"all_regions,keyword_only" group:"地区关注设置" help:"all_regions: 推送全区域地震(默认); keyword_only: 仅推送包含指定关键词的地区" default:"all_regions"`
