@@ -57,8 +57,8 @@ type ClockTask struct {
 	Note       string      `json:"note,omitempty"`
 	CreatedAt  time.Time   `json:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at"`
-	LastRunAt  time.Time   `json:"last_run_at,omitempty"`
-	NextRunAt  time.Time   `json:"next_run_at,omitempty"`
+	LastRunAt  time.Time   `json:"last_run_at"`
+	NextRunAt  time.Time   `json:"next_run_at"`
 }
 
 // ClockUpdateFields 定时任务可更新字段，指针类型表示「仅当提供时才更新」。
@@ -847,7 +847,7 @@ func (m *clockManager) makeClockCallback(ctx context.Context, task *ClockTask, u
 			}
 			return url, nil
 		},
-		LoadImages: func() (string, error) {
+		LoadImages: func(_ []string) (string, error) {
 			return "当前为定时任务触发，无消息图片可加载", nil
 		},
 		TakeLoadedImages: func() []string {
@@ -898,7 +898,7 @@ func formatHistoryText(msgs *[]message.Message, b bot.Bot) string {
 	var sb strings.Builder
 	for _, msg := range *msgs {
 		sb.WriteString(fmt.Sprintf("[message_seq:%d]\n", msg.MessageSeq))
-		sb.WriteString(msg.FriendlyText(true, opts...))
+		sb.WriteString(annotateEmbeddedImages(msg.FriendlyText(true, opts...)))
 		sb.WriteString("\n")
 	}
 	return sb.String()

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeanhua/AniaBot/bot/component/aichat"
@@ -87,49 +89,101 @@ func (p *AIChatPlugin) extraMsg(b bot.Bot, msg message.Message) string {
 	if msg.Sender.UserId == message.FromUint64(0) {
 		opts = append(opts, message.WithNoSenderPrefix())
 	}
-	return msg.FriendlyText(true, opts...)
+	// 文本内嵌附件描述（如 QQ 官方聊天记录）兜底补充 [图片 <hash> url:<url>] 标记
+	return annotateEmbeddedImages(msg.FriendlyText(true, opts...))
 }
 
-func collectImageURLs(bot bot.Bot, msgs ...message.Message) []string {
-	urls := make([]string, 0)
-	seenURLs := make(map[string]struct{})
-	seenMessages := make(map[message.QID]struct{})
+// imageRef 已解析到的图片引用：哈希用于与消息文本中的 [图片 <hash>] 标记对应，
+// URL 用于真正加载图片进上下文（多模态）或交给备用识别模型（OCR）。
+type imageRef struct {
+	Hash string
+	URL  string
+}
 
-	var collect func(message.Message)
-	collect = func(current message.Message) {
-		if current.MessageId != "" {
-			if _, ok := seenMessages[current.MessageId]; ok {
-				return
-			}
-			seenMessages[current.MessageId] = struct{}{}
-		}
-		for _, segment := range current.Message {
-			switch segment.Type {
-			case message.SegmentImage:
-				var image message.ImageMessage
-				if message.ParseImage(segment, &image) && image.Url != "" {
-					if _, ok := seenURLs[image.Url]; !ok {
-						seenURLs[image.Url] = struct{}{}
-						urls = append(urls, image.Url)
-					}
-				}
-			case message.SegmentReply:
-				var reply message.ReplyMessage
-				if message.ParseReply(segment, &reply) {
-					if detail, ok := bot.GetMsgDetail(reply.Id); ok && detail != nil {
-						collect(*detail)
-					}
-				}
-			}
-		}
+// imageRegistry 请求级图片哈希→URL 注册表。消息展示给 AI 的每张图片
+// （当前消息、get_msg_history 历史记录、合并转发内容）都会登记，
+// load_images 按哈希查找并只加载指定的图片，避免一次全部塞进上下文。
+type imageRegistry struct {
+	mu      sync.Mutex
+	byHash  map[string]string
+	byAlias map[string]string // 非哈希别名（如聊天记录文本里的文件名）→ URL
+}
+
+func newImageRegistry() *imageRegistry {
+	return &imageRegistry{
+		byHash:  make(map[string]string),
+		byAlias: make(map[string]string),
 	}
+}
 
+// register 登记图片哈希→URL 映射；同一哈希只保留首次登记（先到先得）。
+func (r *imageRegistry) register(hash, url string) {
+	if hash == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byHash[hash]; !ok {
+		r.byHash[hash] = url
+	}
+}
+
+// registerAlias 登记图片的非哈希别名（如聊天记录文本中的文件名）→ URL，
+// 兼容 AI 把文件名当哈希传入 load_images 的情况；同一别名只保留首次登记。
+func (r *imageRegistry) registerAlias(alias, url string) {
+	if alias == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byAlias[alias]; !ok {
+		r.byAlias[alias] = url
+	}
+}
+
+// resolve 按哈希解析图片引用，返回找到的引用与未登记的哈希。
+// 未命中哈希时回退查文件名别名，命中后返回规范哈希（与消息文本 [图片 <hash>] 一致）。
+func (r *imageRegistry) resolve(hashes []string) (found []imageRef, missing []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, hash := range hashes {
+		url, ok := r.byHash[hash]
+		if !ok {
+			if aliasURL, ok2 := r.byAlias[hash]; ok2 {
+				found = append(found, imageRef{Hash: message.ImageHash(aliasURL), URL: aliasURL})
+				continue
+			}
+			missing = append(missing, hash)
+			continue
+		}
+		found = append(found, imageRef{Hash: hash, URL: url})
+	}
+	return found, missing
+}
+
+// imageMessageSource 消息图片登记所需的最小消息查询能力（bot.Bot 天然满足）。
+type imageMessageSource interface {
+	GetMsgDetail(msgId message.QID) (*message.Message, bool)
+}
+
+// imageForwardSource 合并转发展开能力（QQ 平台独有，bot.Bot 未必实现）。
+type imageForwardSource interface {
+	GetForwardMsg(msgId message.QID) (*[]message.Message, bool)
+}
+
+// registerMessageImages 递归登记消息及其引用/合并转发中的图片（与 FriendlyText
+// 的展开范围一致），使 load_images 能按哈希加载历史记录与转发里的图片。
+func registerMessageImages(reg *imageRegistry, src imageMessageSource, msgs ...message.Message) {
+	if reg == nil {
+		return
+	}
+	seen := make(map[message.QID]struct{})
 	for _, msg := range msgs {
-		collect(msg)
+		reg.registerMessage(src, msg, seen)
 	}
-	return urls
 }
 
+<<<<<<< HEAD
 // configureImageCallbacks 挂载消息图片的加载回调。usageSink 接收备用图片识别
 // （OCR）产生的 LLM 用量，由调用方并入所属请求/会话的统计与配额。
 func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot, callbacks *llmtool.CallBackFuncs, usageSink func(aichat.TokenUsage), msgs ...message.Message) {
@@ -151,20 +205,180 @@ func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot,
 	callbacks.LoadImages = func() (string, error) {
 		if loaded {
 			return "当前消息中的图片已经加载，无需重复调用", nil
+=======
+func (r *imageRegistry) registerMessage(src imageMessageSource, current message.Message, seen map[message.QID]struct{}) {
+	if current.MessageId != "" {
+		if _, ok := seen[current.MessageId]; ok {
+			return
+>>>>>>> upstream/main
 		}
-		loaded = true
-		if len(imageURLs) == 0 {
-			return "当前消息及其引用消息中没有可加载的图片", nil
+		seen[current.MessageId] = struct{}{}
+	}
+	for _, segment := range current.Message {
+		switch segment.Type {
+		case message.SegmentImage:
+			var image message.ImageMessage
+			if message.ParseImage(segment, &image) {
+				r.register(image.Hash(), image.Url)
+			}
+		case message.SegmentText:
+			// 平台文本内嵌的图片附件描述（如 QQ 官方聊天记录）兜底登记，
+			// 使 load_images 在适配器未拆段时也能按哈希/文件名加载
+			var txt message.TextMessage
+			if message.ParseText(segment, &txt) {
+				registerEmbeddedImages(r, txt.Text)
+			}
+		case message.SegmentReply:
+			var reply message.ReplyMessage
+			if message.ParseReply(segment, &reply) {
+				if detail, ok := src.GetMsgDetail(reply.Id); ok && detail != nil {
+					r.registerMessage(src, *detail, seen)
+				}
+			}
+		case message.SegmentForward:
+			var fwd message.ForwardMessage
+			if message.ParseForward(segment, &fwd) {
+				if fwdSrc, ok := src.(imageForwardSource); ok {
+					if detail, ok := fwdSrc.GetForwardMsg(fwd.Id); ok && detail != nil {
+						for i := range *detail {
+							r.registerMessage(src, (*detail)[i], seen)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// embeddedImageRe 匹配平台文本内嵌的图片附件描述（如 QQ 官方聊天记录），与
+// qqofficial 适配器的拆段正则同源。适配器已拆段时这里只是兜底（如历史消息或
+// 未被适配器识别的场景），保证 load_images 仍能按哈希/文件名加载。
+var embeddedImageRe = regexp.MustCompile(`\[附件\d+\]\s*类型:([^\s]+)\s+(?:文件名:(\S+)\s+)?(?:尺寸:\d+x\d+\s+)?(?:大小:\S+\s+)?URL:(\S+)`)
+
+// isImageAttachmentType 判断文本附件描述的类型是否为图片（中文标签或英文 MIME）。
+func isImageAttachmentType(kind string) bool {
+	k := strings.ToLower(kind)
+	return k == "图片" || strings.HasPrefix(k, "image")
+}
+
+// registerEmbeddedImages 登记文本内嵌图片附件的哈希→URL，并登记文件名别名，
+// 使 load_images 能加载聊天记录等以文本描述携带的图片。
+func registerEmbeddedImages(r *imageRegistry, text string) {
+	for _, m := range embeddedImageRe.FindAllStringSubmatch(text, -1) {
+		if !isImageAttachmentType(m[1]) {
+			continue
+		}
+		url := m[3]
+		if url == "" {
+			continue
+		}
+		r.register(message.ImageHash(url), url)
+		if m[2] != "" {
+			r.registerAlias(m[2], url)
+		}
+	}
+}
+
+// annotateEmbeddedImages 在文本内嵌的图片附件描述后补充 [图片 <hash> url:<url>] 标记，
+// 使 AI 能看到与 load_images 对应的哈希（聊天记录等平台文本描述场景的兜底展示）。
+func annotateEmbeddedImages(text string) string {
+	idx := embeddedImageRe.FindAllStringSubmatchIndex(text, -1)
+	if len(idx) == 0 {
+		return text
+	}
+	var sb strings.Builder
+	last := 0
+	for _, m := range idx {
+		if !isImageAttachmentType(text[m[2]:m[3]]) {
+			continue
+		}
+		url := text[m[6]:m[7]]
+		if url == "" {
+			continue
+		}
+		sb.WriteString(text[last:m[1]])
+		sb.WriteString(fmt.Sprintf(" [图片 %s url:%s]", message.ImageHash(url), url))
+		last = m[1]
+	}
+	sb.WriteString(text[last:])
+	return sb.String()
+}
+
+// configureImageCallbacks 挂载消息图片的加载回调。registry 为本次请求的
+// 图片哈希→URL 注册表（当前消息、历史记录、合并转发中的图片都会登记），
+// load_images 按哈希解析并只加载指定的图片。usageSink 接收备用图片识别
+// （OCR）产生的 LLM 用量，由调用方并入所属请求/会话的统计与配额。
+func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot, callbacks *llmtool.CallBackFuncs, registry *imageRegistry, usageSink func(aichat.TokenUsage), msgs ...message.Message) {
+	registerMessageImages(registry, bot, msgs...)
+	var loadedImages []string
+	// loadedHashes 记录已加载过的图片哈希，避免同一张图片重复进入上下文/重复 OCR；
+	// 仅在图片成功取回后登记，加载失败的哈希下次可重试
+	loadedHashes := make(map[string]struct{})
+
+	callbacks.LoadImages = func(hashes []string) (string, error) {
+		if len(hashes) == 0 {
+			return "请通过 hashes 参数传入要查看的图片哈希。图片在消息中以 [图片 <hash> url:<url>] 标识，可从当前消息、get_msg_history 历史记录或合并转发内容中获取", nil
+		}
+
+		found, missing := registry.resolve(hashes)
+		if len(found) == 0 {
+			msg := "没有找到可加载的图片："
+			if len(missing) > 0 {
+				msg += "未登记的哈希 " + strings.Join(missing, "、") + "（请确认哈希来自消息中的 [图片 <hash> url:<url>] 标记）"
+			}
+			return msg, nil
+		}
+
+		// 只加载本次尚未加载过的图片；已加载的哈希直接跳过
+		var toLoad []imageRef
+		already := make([]string, 0)
+		for _, ref := range found {
+			if _, ok := loadedHashes[ref.Hash]; ok {
+				already = append(already, "[图片 "+ref.Hash+"]")
+				continue
+			}
+			if ref.URL == "" {
+				missing = append(missing, ref.Hash+"（无可用链接）")
+				continue
+			}
+			toLoad = append(toLoad, ref)
+		}
+
+		if len(toLoad) == 0 {
+			msg := "这些图片已经加载过，无需重复调用（" + strings.Join(already, "、") + "）"
+			if len(missing) > 0 {
+				msg += "；未找到：" + strings.Join(missing, "、")
+			}
+			return msg, nil
 		}
 
 		if p.cfg.Multimodal {
-			loadedImages = append(loadedImages, imageURLs...)
-			// 列出每张图片的哈希标识，与消息文本中的 [图片 <hash>] 标记对应
-			labels := make([]string, 0, len(imageURLs))
-			for _, imageURL := range imageURLs {
-				labels = append(labels, "[图片 "+message.ImageHash(imageURL)+"]")
+			// 在本机下载并统一为 data URI：QQ 临时链接带 rkey、上游机房未必能访问，
+			// 直接透传 URL 会因上游拉取失败或格式不支持（如 QQ 截图常见的 BMP）导致整轮请求 400
+			labels := make([]string, 0, len(toLoad))
+			failed := make([]string, 0)
+			for _, ref := range toLoad {
+				dataURI, err := fetchImageDataURI(ctx, ref.URL)
+				if err != nil {
+					p.Logger.Warn("图片加载失败", "hash", ref.Hash, "error", err.Error())
+					failed = append(failed, "[图片 "+ref.Hash+"]："+err.Error())
+					continue
+				}
+				loadedHashes[ref.Hash] = struct{}{}
+				loadedImages = append(loadedImages, dataURI)
+				labels = append(labels, "[图片 "+ref.Hash+"]")
 			}
-			return fmt.Sprintf("已加载 %d 张图片（%s），图片将在下一轮上下文中提供，请直接查看图片后回答", len(imageURLs), strings.Join(labels, "、")), nil
+			var extra string
+			if len(missing) > 0 {
+				extra += "；未找到：" + strings.Join(missing, "、")
+			}
+			if len(failed) > 0 {
+				extra += "；加载失败：" + strings.Join(failed, "、")
+			}
+			if len(loadedImages) == 0 {
+				return "图片加载失败（" + strings.Join(failed, "、") + "）" + extra, nil
+			}
+			return fmt.Sprintf("已加载 %d 张图片（%s），图片将在下一轮上下文中提供，请直接查看图片后回答%s", len(labels), strings.Join(labels, "、"), extra), nil
 		}
 
 		if p.ocrModel == nil {
@@ -172,20 +386,28 @@ func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot,
 		}
 
 		var result strings.Builder
-		result.WriteString("主模型不支持多模态，以下是备用图片识别模型返回的图片描述：")
-		for _, imageURL := range imageURLs {
-			hash := message.ImageHash(imageURL)
-			dataURI := fetchImageAsDataURI(ctx, imageURL)
+		for _, ref := range toLoad {
+			// 与多模态路径一致：先在本机下载并转码为 data URI，避免备用模型拉不到 QQ 链接
+			dataURI, err := fetchImageDataURI(ctx, ref.URL)
+			if err != nil {
+				p.Logger.Warn("备用图片识别下载失败", "hash", ref.Hash, "error", err.Error())
+				result.WriteString(fmt.Sprintf("\n<图片 %s>识别失败：%s</图片 %s>", ref.Hash, err.Error(), ref.Hash))
+				continue
+			}
+			loadedHashes[ref.Hash] = struct{}{}
 			description, usage, err := p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
 			if err != nil {
-				p.Logger.Error("备用图片识别请求失败", "hash", hash, "error", err.Error())
-				result.WriteString(fmt.Sprintf("\n<图片 %s>识别失败：%s</图片 %s>", hash, err.Error(), hash))
+				p.Logger.Error("备用图片识别请求失败", "hash", ref.Hash, "error", err.Error())
+				result.WriteString(fmt.Sprintf("\n<图片 %s>识别失败：%s</图片 %s>", ref.Hash, err.Error(), ref.Hash))
 				continue
 			}
 			if usageSink != nil {
 				usageSink(usage)
 			}
-			result.WriteString(fmt.Sprintf("\n<图片 %s>\n%s\n</图片 %s>", hash, description, hash))
+			result.WriteString(fmt.Sprintf("\n<图片 %s>\n%s\n</图片 %s>", ref.Hash, description, ref.Hash))
+		}
+		if len(missing) > 0 {
+			result.WriteString("\n未找到：" + strings.Join(missing, "、"))
 		}
 		return result.String(), nil
 	}

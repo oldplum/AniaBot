@@ -30,7 +30,7 @@ const features = [
   {
     icon: 'database',
     title: '双层存储',
-    desc: '缓存层（Redis / 内存）+ 持久化层（SQLite / MySQL），纯 Go 无 CGO，插件数据自动按命名空间隔离。',
+    desc: '缓存层（Redis / 内存）+ 持久化层（SQLite / MySQL），插件数据自动按命名空间隔离。',
   },
 ]
 
@@ -122,3 +122,4 @@ const steps = [
     </div>
   </div>
 </template>
+
