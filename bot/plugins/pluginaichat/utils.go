@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,43 +35,6 @@ func parseQID(s string) message.QID {
 		return message.FromUint64(n)
 	}
 	return message.FromString(strings.TrimSpace(s))
-}
-
-func fetchImageAsDataURI(ctx context.Context, urlStr string) string {
-	if strings.HasPrefix(urlStr, "data:") {
-		return urlStr
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
-	if err != nil {
-		return urlStr
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return urlStr
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return urlStr
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil || len(data) == 0 {
-		return urlStr
-	}
-
-	mime := resp.Header.Get("Content-Type")
-	if mime == "" || !strings.HasPrefix(mime, "image/") {
-		mime = http.DetectContentType(data)
-		if !strings.HasPrefix(mime, "image/") {
-			mime = "image/png"
-		}
-	}
-
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 func (p *AIChatPlugin) extraMsg(b bot.Bot, msg message.Message) string {
@@ -183,34 +144,10 @@ func registerMessageImages(reg *imageRegistry, src imageMessageSource, msgs ...m
 	}
 }
 
-<<<<<<< HEAD
-// configureImageCallbacks 挂载消息图片的加载回调。usageSink 接收备用图片识别
-// （OCR）产生的 LLM 用量，由调用方并入所属请求/会话的统计与配额。
-func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot, callbacks *llmtool.CallBackFuncs, usageSink func(aichat.TokenUsage), msgs ...message.Message) {
-	imageURLs := collectImageURLs(bot, msgs...)
-	var loadedImages []string
-	loaded := false
-
-	if p.ocrModel != nil {
-		callbacks.DescribeImage = func(ctx context.Context, imageURL string) (string, error) {
-			dataURI := fetchImageAsDataURI(ctx, imageURL)
-			desc, usage, err := p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
-			if usageSink != nil {
-				usageSink(usage)
-			}
-			return desc, err
-		}
-	}
-
-	callbacks.LoadImages = func() (string, error) {
-		if loaded {
-			return "当前消息中的图片已经加载，无需重复调用", nil
-=======
 func (r *imageRegistry) registerMessage(src imageMessageSource, current message.Message, seen map[message.QID]struct{}) {
 	if current.MessageId != "" {
 		if _, ok := seen[current.MessageId]; ok {
 			return
->>>>>>> upstream/main
 		}
 		seen[current.MessageId] = struct{}{}
 	}
@@ -386,6 +323,7 @@ func (p *AIChatPlugin) configureImageCallbacks(ctx context.Context, bot bot.Bot,
 		}
 
 		var result strings.Builder
+		result.WriteString("主模型不支持多模态，以下是备用图片识别模型返回的图片描述：")
 		for _, ref := range toLoad {
 			// 与多模态路径一致：先在本机下载并转码为 data URI，避免备用模型拉不到 QQ 链接
 			dataURI, err := fetchImageDataURI(ctx, ref.URL)

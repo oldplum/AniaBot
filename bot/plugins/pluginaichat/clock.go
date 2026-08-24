@@ -864,17 +864,6 @@ func (m *clockManager) makeClockCallback(ctx context.Context, task *ClockTask, u
 			return p.loadLocalImageInto(ctx, path, &loadedImages, usageSink), nil
 		}
 	}
-	if m.plugin.ocrModel != nil {
-		p := m.plugin
-		cbs.DescribeImage = func(ctx context.Context, imageURL string) (string, error) {
-			dataURI := fetchImageAsDataURI(ctx, imageURL)
-			desc, usage, err := p.ocrModel.GetSingleImageDesc(ctx, "描述图片内容", dataURI, p.buildOCRChatOptions())
-			if usageSink != nil {
-				usageSink(usage)
-			}
-			return desc, err
-		}
-	}
 	// 命令级人工审批（bash 三段式）：定时任务无人值守，requester=0 即仅管理员可批；
 	// 审批提示发到任务目标会话。仅在工具审批开关开启时注入：审批关闭时
 	// approvalManager 可能仅为配置修改工具构造，bash 未列名命令默认放行（只认黑名单）。
