@@ -493,6 +493,11 @@ func (p *AIChatPlugin) processChatBatch(ctx context.Context, b bot.Bot, id messa
 				// 否则会以「历史各轮全文 + 新文本」开头，重复发送中间内容
 				streamBuf.Reset()
 			}
+			// 流式中途失败后的重试/切备用：清空已展示缓冲，让重试从头生成的
+			// 内容整体覆盖旧输出（Patch 为覆盖语义，不会拼接重复文本）
+			chatOpts.OnStreamRestart = func() {
+				streamBuf.Reset()
+			}
 		}
 	}
 
@@ -847,13 +852,6 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	if localImageConfig.Enable {
 		p.Logger.Info("已启用local_image工具（可读取宿主机本地图片供AI查看，请注意安全风险）")
 	}
-	memeConfig := functool.MemeConfig{
-		URL:      p.cfg.Meme.URL,
-		Key:      p.cfg.Meme.Key,
-		ListPath: p.cfg.Meme.ListPath,
-		ImgField: p.cfg.Meme.ImgField,
-		Num:      p.cfg.Meme.Num,
-	}
 	var err error
 	p.toolExecutor, p.skillManager, err = functool.CreateToolsWithSkill(
 		p.cfg.Search.Token,
@@ -862,7 +860,6 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 		bashConfig,
 		fileConfig,
 		localImageConfig,
-		memeConfig,
 		p.cfg.Skills,
 		p.cfg.MCP.LazyLoad,
 	)
