@@ -61,23 +61,47 @@ func (e *EEWEvent) GetDepthStr() string {
 
 func (e *EEWEvent) GetMaxIntensityStr() string {
 	if e.MaxIntensity == nil {
-		return "未知"
+		return "不明"
 	}
 	switch v := e.MaxIntensity.(type) {
 	case string:
-		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return strconv.FormatInt(int64(v), 10)
+		s := strings.TrimSpace(v)
+		if s == "" || s == "-" || s == "未知" || s == "不明" || s == "0" {
+			return "不明"
 		}
-		return fmt.Sprintf("%.1f", v)
+		if !strings.HasSuffix(s, "度") {
+			return s + " 度"
+		}
+		return s
+	case float64:
+		if v <= 0 {
+			return "不明"
+		}
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d 度", int64(v))
+		}
+		return fmt.Sprintf("%.1f 度", v)
 	case int:
-		return strconv.Itoa(v)
+		if v <= 0 {
+			return "不明"
+		}
+		return fmt.Sprintf("%d 度", v)
 	case int64:
-		return strconv.FormatInt(v, 10)
+		if v <= 0 {
+			return "不明"
+		}
+		return fmt.Sprintf("%d 度", v)
 	default:
-		return fmt.Sprintf("%v", v)
+		s := fmt.Sprintf("%v", v)
+		if s == "" || s == "0" {
+			return "不明"
+		}
+		return s + " 度"
 	}
+}
+
+func (e *EEWEvent) GetCoordinateStr() string {
+	return FormatCoordinate(e.Latitude, e.Longitude)
 }
 
 func (e *EEWEvent) GetIntensityNum() int {
@@ -183,6 +207,26 @@ func (c *CENCEQItem) GetDepthStr() string {
 	return "不明"
 }
 
+func (c *CENCEQItem) GetIntensityStr() string {
+	val := strings.TrimSpace(c.Intensity)
+	if val == "" || val == "-" || val == "未知" || val == "不明" || val == "0" {
+		return "不明"
+	}
+	if !strings.HasSuffix(val, "度") {
+		return val + " 度"
+	}
+	return val
+}
+
+func (c *CENCEQItem) GetCoordinateStr() string {
+	lat, err1 := strconv.ParseFloat(c.Latitude, 64)
+	lng, err2 := strconv.ParseFloat(c.Longitude, 64)
+	if err1 != nil || err2 != nil {
+		return "不明"
+	}
+	return FormatCoordinate(lat, lng)
+}
+
 // WeatherRankItem 气象排行元素
 type WeatherRankItem struct {
 	Province string `json:"province"`
@@ -245,4 +289,22 @@ func GetIntensityDesc(intensity float64) string {
 	default:
 		return "破坏性震感"
 	}
+}
+
+// FormatCoordinate 格式化经纬度坐标为易读格式（如 28.51°N, 104.67°E）
+func FormatCoordinate(lat, lng float64) string {
+	if lat == 0 && lng == 0 {
+		return "不明"
+	}
+	latDir := "N"
+	if lat < 0 {
+		latDir = "S"
+		lat = -lat
+	}
+	lngDir := "E"
+	if lng < 0 {
+		lngDir = "W"
+		lng = -lng
+	}
+	return fmt.Sprintf("%.2f°%s, %.2f°%s", lat, latDir, lng, lngDir)
 }

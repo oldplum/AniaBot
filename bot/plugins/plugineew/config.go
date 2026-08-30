@@ -32,11 +32,12 @@ type eewConfig struct {
 	MinLocalIntensity float64 `cfg:"plugin.eew.min_local_intensity" label:"最小本地预估烈度" group:"本地位置与烈度测算" help:"本地预估烈度低于此值时不推送(0表示不过滤)" default:"0"`
 
 	// 消息样式个性化
-	CustomHeader  string `cfg:"plugin.eew.custom_header" label:"卡片顶部标题" group:"消息样式个性化" help:"自定义预警消息卡片的顶部标题" default:"🚨【地震预警】🚨"`
-	ShowDepth     bool   `cfg:"plugin.eew.show_depth" label:"显示震源深度" group:"消息样式个性化" default:"true"`
-	ShowIntensity bool   `cfg:"plugin.eew.show_intensity" label:"显示预估烈度" group:"消息样式个性化" default:"true"`
-	ShowTime      bool   `cfg:"plugin.eew.show_time" label:"显示发震/发报时间" group:"消息样式个性化" default:"true"`
-	ShowEventID   bool   `cfg:"plugin.eew.show_event_id" label:"显示事件 ID" group:"消息样式个性化" default:"false"`
+	CustomHeader    string `cfg:"plugin.eew.custom_header" label:"卡片顶部标题" group:"消息样式个性化" help:"自定义预警消息卡片的顶部标题" default:"🚨【地震预警】🚨"`
+	ShowCoordinates bool   `cfg:"plugin.eew.show_coordinates" label:"显示震中经纬度" group:"消息样式个性化" default:"true"`
+	ShowDepth       bool   `cfg:"plugin.eew.show_depth" label:"显示震源深度" group:"消息样式个性化" default:"true"`
+	ShowIntensity   bool   `cfg:"plugin.eew.show_intensity" label:"显示震中烈度" group:"消息样式个性化" default:"true"`
+	ShowTime        bool   `cfg:"plugin.eew.show_time" label:"显示发震/发报时间" group:"消息样式个性化" default:"true"`
+	ShowEventID     bool   `cfg:"plugin.eew.show_event_id" label:"显示事件 ID" group:"消息样式个性化" default:"false"`
 
 	// 强震与夜间静音
 	AtAll             bool    `cfg:"plugin.eew.at_all" label:"强震时 @全体成员" group:"强震与夜间静音" default:"false"`

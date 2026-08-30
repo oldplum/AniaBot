@@ -708,6 +708,9 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 		sb.WriteString(fmt.Sprintf("发报说明: %s\n", event.Title))
 	}
 	sb.WriteString(fmt.Sprintf("震中位置: %s\n", loc))
+	if p.cfg.ShowCoordinates && (event.Latitude != 0 || event.Longitude != 0) {
+		sb.WriteString(fmt.Sprintf("震中坐标: %s\n", event.GetCoordinateStr()))
+	}
 	if mag > 0 {
 		sb.WriteString(fmt.Sprintf("预估震级: M %.1f\n", mag))
 	}
@@ -715,7 +718,7 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 		sb.WriteString(fmt.Sprintf("震源深度: %s\n", event.GetDepthStr()))
 	}
 	if p.cfg.ShowIntensity && event.MaxIntensity != nil {
-		sb.WriteString(fmt.Sprintf("预估烈度: %s\n", event.GetMaxIntensityStr()))
+		sb.WriteString(fmt.Sprintf("震中烈度: %s\n", event.GetMaxIntensityStr()))
 	}
 	if p.cfg.ShowTime {
 		if event.OriginTime != "" {
@@ -941,8 +944,15 @@ func (p *EEWPlugin) replyEQList(b bot.Bot, target message.QID, isGroup bool) {
 			loc = item.PlaceName
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, loc))
+		if p.cfg.ShowCoordinates && item.GetCoordinateStr() != "不明" {
+			sb.WriteString(fmt.Sprintf("   震中坐标: %s\n", item.GetCoordinateStr()))
+		}
 		sb.WriteString(fmt.Sprintf("   发震时间: %s\n", item.Time))
-		sb.WriteString(fmt.Sprintf("   震级: %s 级 | 深度: %s\n", item.Magnitude, item.GetDepthStr()))
+		intensityStr := ""
+		if item.GetIntensityStr() != "不明" {
+			intensityStr = fmt.Sprintf(" | 震中烈度: %s", item.GetIntensityStr())
+		}
+		sb.WriteString(fmt.Sprintf("   震级: %s 级 | 深度: %s%s\n", item.Magnitude, item.GetDepthStr(), intensityStr))
 		if p.cfg.LocationEnable && (p.cfg.LocationLat != 0 || p.cfg.LocationLng != 0) {
 			lat, err1 := strconv.ParseFloat(item.Latitude, 64)
 			lng, err2 := strconv.ParseFloat(item.Longitude, 64)

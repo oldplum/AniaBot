@@ -91,8 +91,11 @@ func TestEEWEventParsing(t *testing.T) {
 		t.Errorf("expected location 四川宜宾市高县, got %s", event.GetLocation())
 	}
 
-	if event.GetMaxIntensityStr() != "5" {
-		t.Errorf("expected max intensity 5, got %s", event.GetMaxIntensityStr())
+	if event.GetMaxIntensityStr() != "5 度" {
+		t.Errorf("expected max intensity 5 度, got %s", event.GetMaxIntensityStr())
+	}
+	if event.GetCoordinateStr() != "28.51°N, 104.67°E" {
+		t.Errorf("expected coordinate 28.51°N, 104.67°E, got %s", event.GetCoordinateStr())
 	}
 }
 
