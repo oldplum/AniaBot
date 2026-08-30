@@ -689,7 +689,7 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 	if mag > 0 {
 		sb.WriteString(fmt.Sprintf("预估震级: M %.1f\n", mag))
 	}
-	if p.cfg.ShowDepth && event.Depth != nil {
+	if p.cfg.ShowDepth {
 		sb.WriteString(fmt.Sprintf("震源深度: %s\n", event.GetDepthStr()))
 	}
 	if p.cfg.ShowIntensity && event.MaxIntensity != nil {
@@ -900,7 +900,7 @@ func (p *EEWPlugin) replyEQList(b bot.Bot, target message.QID, isGroup bool) {
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, loc))
 		sb.WriteString(fmt.Sprintf("   发震时间: %s\n", item.Time))
-		sb.WriteString(fmt.Sprintf("   震级: %s 级 | 深度: %s km\n", item.Magnitude, item.Depth))
+		sb.WriteString(fmt.Sprintf("   震级: %s 级 | 深度: %s\n", item.Magnitude, item.GetDepthStr()))
 		if i < count-1 {
 			sb.WriteString("\n")
 		}

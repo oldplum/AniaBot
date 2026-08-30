@@ -96,6 +96,50 @@ func TestEEWEventParsing(t *testing.T) {
 	}
 }
 
+func TestDepthParsing(t *testing.T) {
+	d0 := 0.0
+	dNeg := -5.0
+	dPos := 12.3
+
+	tests := []struct {
+		event    EEWEvent
+		expected string
+	}{
+		{EEWEvent{Depth: nil}, "不明"},
+		{EEWEvent{Depth: &d0}, "不明"},
+		{EEWEvent{Depth: &dNeg}, "不明"},
+		{EEWEvent{Depth: &dPos}, "12.3 km"},
+	}
+
+	for i, tc := range tests {
+		got := tc.event.GetDepthStr()
+		if got != tc.expected {
+			t.Errorf("test %d: expected %s, got %s", i, tc.expected, got)
+		}
+	}
+
+	cencTests := []struct {
+		item     CENCEQItem
+		expected string
+	}{
+		{CENCEQItem{Depth: ""}, "不明"},
+		{CENCEQItem{Depth: "0"}, "不明"},
+		{CENCEQItem{Depth: "0.0"}, "不明"},
+		{CENCEQItem{Depth: "0 km"}, "不明"},
+		{CENCEQItem{Depth: "-10"}, "不明"},
+		{CENCEQItem{Depth: "未知"}, "不明"},
+		{CENCEQItem{Depth: "10"}, "10 km"},
+		{CENCEQItem{Depth: "15.5 km"}, "15.5 km"},
+	}
+
+	for i, tc := range cencTests {
+		got := tc.item.GetDepthStr()
+		if got != tc.expected {
+			t.Errorf("cencTest %d: expected %s, got %s", i, tc.expected, got)
+		}
+	}
+}
+
 func TestWeatherRankParsing(t *testing.T) {
 	rawJSON := `{
 		"202607281100": {

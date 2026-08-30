@@ -52,8 +52,8 @@ func (e *EEWEvent) GetLocation() string {
 }
 
 func (e *EEWEvent) GetDepthStr() string {
-	if e.Depth == nil {
-		return "未知"
+	if e.Depth == nil || *e.Depth <= 0 {
+		return "不明"
 	}
 	return fmt.Sprintf("%.1f km", *e.Depth)
 }
@@ -162,6 +162,24 @@ type CENCEQItem struct {
 	Latitude   string `json:"latitude"`
 	Longitude  string `json:"longitude"`
 	Intensity  string `json:"intensity"`
+}
+
+func (c *CENCEQItem) GetDepthStr() string {
+	d := strings.TrimSpace(c.Depth)
+	if d == "" || d == "-" || d == "未知" || d == "不明" {
+		return "不明"
+	}
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(d, "km"), "KM"))
+	if val, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		if val <= 0 {
+			return "不明"
+		}
+		if val == float64(int64(val)) {
+			return fmt.Sprintf("%d km", int64(val))
+		}
+		return fmt.Sprintf("%.1f km", val)
+	}
+	return "不明"
 }
 
 // WeatherRankItem 气象排行元素
