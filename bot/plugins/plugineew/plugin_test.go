@@ -197,3 +197,31 @@ func TestWSDial(t *testing.T) {
 	defer conn.Close()
 	t.Logf("Successfully connected to %s", urlStr)
 }
+
+func TestLocalCalc(t *testing.T) {
+	// 成都 (30.6586, 104.0648) 到 宜宾 (28.51, 104.67)
+	dist := CalcDistance(30.6586, 104.0648, 28.51, 104.67)
+	if dist < 240 || dist > 260 {
+		t.Errorf("expected distance between Chengdu and Yibin around 245 km, got %f", dist)
+	}
+
+	// 5.0 级地震，距离 200 km，深度 10 km
+	intensity := CalcLocalIntensity(5.0, 200, 10)
+	if intensity < 1.5 || intensity > 3.0 {
+		t.Errorf("expected local intensity around 2.1, got %f", intensity)
+	}
+
+	desc := GetIntensityDesc(intensity)
+	if desc != "轻微有感" {
+		t.Errorf("expected description 轻微有感, got %s", desc)
+	}
+
+	// 近距离大震
+	strongInt := CalcLocalIntensity(7.0, 20, 10)
+	if strongInt < 7.0 {
+		t.Errorf("expected strong local intensity >= 7.0, got %f", strongInt)
+	}
+	if GetIntensityDesc(strongInt) != "破坏性震感" {
+		t.Errorf("expected description 破坏性震感, got %s", GetIntensityDesc(strongInt))
+	}
+}

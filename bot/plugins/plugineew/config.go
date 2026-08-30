@@ -24,6 +24,13 @@ type eewConfig struct {
 	FocusMode     string   `cfg:"plugin.eew.focus_mode" label:"地区过滤模式" type:"select" options:"all_regions,keyword_only" group:"地区关注设置" help:"all_regions: 推送全区域地震(默认); keyword_only: 仅推送包含指定关键词的地区" default:"all_regions"`
 	FocusKeywords []string `cfg:"plugin.eew.focus_keywords" label:"关注地区关键词" group:"地区关注设置" help:"例如：四川,成都,宜宾。设置后若开启关键词模式，仅震中包含这些词时才推送"`
 
+	// 本地位置与烈度测算
+	LocationEnable    bool    `cfg:"plugin.eew.location_enable" label:"开启本地测算" group:"本地位置与烈度测算" default:"false"`
+	LocationName      string  `cfg:"plugin.eew.location_name" label:"本地地名备注" group:"本地位置与烈度测算" help:"如 成都、北京海淀 等，显示在预警卡片中" default:"本地"`
+	LocationLat       float64 `cfg:"plugin.eew.location_lat" label:"本地纬度" group:"本地位置与烈度测算" help:"例如 30.6586 (北纬为正，南纬为负)" default:"0"`
+	LocationLng       float64 `cfg:"plugin.eew.location_lng" label:"本地经度" group:"本地位置与烈度测算" help:"例如 104.0648 (东经为正，西经为负)" default:"0"`
+	MinLocalIntensity float64 `cfg:"plugin.eew.min_local_intensity" label:"最小本地预估烈度" group:"本地位置与烈度测算" help:"本地预估烈度低于此值时不推送(0表示不过滤)" default:"0"`
+
 	// 消息样式个性化
 	CustomHeader  string `cfg:"plugin.eew.custom_header" label:"卡片顶部标题" group:"消息样式个性化" help:"自定义预警消息卡片的顶部标题" default:"🚨【地震预警】🚨"`
 	ShowDepth     bool   `cfg:"plugin.eew.show_depth" label:"显示震源深度" group:"消息样式个性化" default:"true"`

@@ -61,6 +61,11 @@ func (p *EEWPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 		"min_intensity", p.cfg.MinIntensity,
 		"push_strategy", p.cfg.PushStrategy,
 		"focus_mode", p.cfg.FocusMode,
+		"location_enable", p.cfg.LocationEnable,
+		"location_name", p.cfg.LocationName,
+		"location_lat", p.cfg.LocationLat,
+		"location_lng", p.cfg.LocationLng,
+		"min_local_intensity", p.cfg.MinLocalIntensity,
 		"groups", p.cfg.Groups,
 		"friends", p.cfg.Friends,
 	)
@@ -637,7 +642,24 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 		}
 	}
 
-	// 5. 推送策略过滤
+	// 5. 本地烈度门槛过滤
+	var localDist float64
+	var localIntensity float64
+	hasLocalCalc := p.cfg.LocationEnable && (p.cfg.LocationLat != 0 || p.cfg.LocationLng != 0) && (event.Latitude != 0 || event.Longitude != 0)
+	if hasLocalCalc {
+		localDist = CalcDistance(p.cfg.LocationLat, p.cfg.LocationLng, event.Latitude, event.Longitude)
+		depth := 10.0
+		if event.Depth != nil && *event.Depth > 0 {
+			depth = *event.Depth
+		}
+		localIntensity = CalcLocalIntensity(mag, localDist, depth)
+		if p.cfg.MinLocalIntensity > 0 && localIntensity < p.cfg.MinLocalIntensity {
+			p.Logger.Info("地震预警本地预估烈度低于设定门槛，已过滤", "local_intensity", localIntensity, "min_local_intensity", p.cfg.MinLocalIntensity)
+			return
+		}
+	}
+
+	// 6. 推送策略过滤
 	p.Logger.Info("收到符合条件的新 EEW 预警数据，准备广播",
 		"event_id", event.EventID,
 		"report_num", reportNum,
@@ -667,7 +689,7 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 		}
 	}
 
-	// 6. 构造个性化消息卡片
+	// 7. 构造个性化消息卡片
 	header := p.cfg.CustomHeader
 	if header == "" {
 		header = "🚨【地震预警】🚨"
@@ -702,6 +724,16 @@ func (p *EEWPlugin) processEEWEvent(bot bot.Bot, event EEWEvent) {
 		if event.ReportTime != "" {
 			sb.WriteString(fmt.Sprintf("发报时间: %s\n", event.ReportTime))
 		}
+	}
+	if hasLocalCalc {
+		locName := strings.TrimSpace(p.cfg.LocationName)
+		if locName == "" {
+			locName = "本地"
+		}
+		sb.WriteString("--------------------------------\n")
+		sb.WriteString(fmt.Sprintf("📍【本地测算 (%s)】\n", locName))
+		sb.WriteString(fmt.Sprintf("震中距离: %.1f km\n", localDist))
+		sb.WriteString(fmt.Sprintf("预估烈度: %.1f 度 (%s)\n", localIntensity, GetIntensityDesc(localIntensity)))
 	}
 	if p.cfg.ShowEventID && event.EventID != "" {
 		sb.WriteString(fmt.Sprintf("事件ID: %s", event.EventID))
@@ -823,6 +855,16 @@ func (p *EEWPlugin) replyStatus(b bot.Bot, target message.QID, isGroup bool) {
 	if p.cfg.QuietHoursEnable {
 		sb.WriteString(fmt.Sprintf("夜间静音: %s ~ %s (放行 M≥%.1f)\n", p.cfg.QuietHoursStart, p.cfg.QuietHoursEnd, p.cfg.QuietMinMagnitude))
 	}
+	if p.cfg.LocationEnable && (p.cfg.LocationLat != 0 || p.cfg.LocationLng != 0) {
+		locName := strings.TrimSpace(p.cfg.LocationName)
+		if locName == "" {
+			locName = "本地"
+		}
+		sb.WriteString(fmt.Sprintf("本地测算: %s (%.4f, %.4f)\n", locName, p.cfg.LocationLat, p.cfg.LocationLng))
+		if p.cfg.MinLocalIntensity > 0 {
+			sb.WriteString(fmt.Sprintf("本地烈度门槛: ≥ %.1f 度\n", p.cfg.MinLocalIntensity))
+		}
+	}
 	sb.WriteString(fmt.Sprintf("最近心跳/数据: %s\n", lastMsg))
 	groupCount := 0
 	for _, g := range p.cfg.Groups {
@@ -901,6 +943,20 @@ func (p *EEWPlugin) replyEQList(b bot.Bot, target message.QID, isGroup bool) {
 		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, loc))
 		sb.WriteString(fmt.Sprintf("   发震时间: %s\n", item.Time))
 		sb.WriteString(fmt.Sprintf("   震级: %s 级 | 深度: %s\n", item.Magnitude, item.GetDepthStr()))
+		if p.cfg.LocationEnable && (p.cfg.LocationLat != 0 || p.cfg.LocationLng != 0) {
+			lat, err1 := strconv.ParseFloat(item.Latitude, 64)
+			lng, err2 := strconv.ParseFloat(item.Longitude, 64)
+			if err1 == nil && err2 == nil && (lat != 0 || lng != 0) {
+				dist := CalcDistance(p.cfg.LocationLat, p.cfg.LocationLng, lat, lng)
+				mag, _ := strconv.ParseFloat(item.Magnitude, 64)
+				depth := 10.0
+				if d, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSuffix(item.Depth, "km"), "KM"), 64); err == nil && d > 0 {
+					depth = d
+				}
+				localIntensity := CalcLocalIntensity(mag, dist, depth)
+				sb.WriteString(fmt.Sprintf("   本地测算: 距震中 %.1f km | 预估烈度: %.1f 度 (%s)\n", dist, localIntensity, GetIntensityDesc(localIntensity)))
+			}
+		}
 		if i < count-1 {
 			sb.WriteString("\n")
 		}

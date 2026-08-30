@@ -2,6 +2,7 @@ package plugineew
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -194,4 +195,54 @@ type WeatherHourRank struct {
 	TempRank  []WeatherRankItem `json:"tempRank"`
 	RainRank  []WeatherRankItem `json:"rainRank"`
 	WindSRank []WeatherRankItem `json:"windSRank"`
+}
+
+// CalcDistance 使用 Haversine 公式计算两个经纬度坐标之间的球面大圆距离（单位：公里 km）
+func CalcDistance(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusKm = 6371.0
+	rad := math.Pi / 180.0
+	dLat := (lat2 - lat1) * rad
+	dLng := (lng2 - lng1) * rad
+	lat1Rad := lat1 * rad
+	lat2Rad := lat2 * rad
+
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	dist := earthRadiusKm * c
+	return math.Round(dist*10) / 10
+}
+
+// CalcLocalIntensity 依据中国地震烈度衰减关系（国家标准/汪素云中国大陆经验衰减公式）推算本地预估烈度
+// 公式形式: I = 4.493 + 1.454 * M - 1.792 * ln(R + 16)，其中 R = sqrt(D^2 + h^2)
+// depthKm 若 <= 0 或不明，按浅源地震默认深度 10.0 km 计算
+func CalcLocalIntensity(mag float64, distKm float64, depthKm float64) float64 {
+	if mag <= 0 {
+		return 0.0
+	}
+	if depthKm <= 0 {
+		depthKm = 10.0
+	}
+	// 空间震源距 R
+	hypoDist := math.Sqrt(distKm*distKm + depthKm*depthKm)
+	intensity := 4.493 + 1.454*mag - 1.792*math.Log(hypoDist+16.0)
+	if intensity < 0 {
+		intensity = 0.0
+	}
+	return math.Round(intensity*10) / 10
+}
+
+// GetIntensityDesc 获取地震烈度的体感/影响等级描述
+func GetIntensityDesc(intensity float64) string {
+	switch {
+	case intensity < 1.0:
+		return "无感"
+	case intensity < 3.0:
+		return "轻微有感"
+	case intensity < 5.0:
+		return "明显震感"
+	case intensity < 7.0:
+		return "强烈震感"
+	default:
+		return "破坏性震感"
+	}
 }
