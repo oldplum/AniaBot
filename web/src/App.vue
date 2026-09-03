@@ -38,18 +38,22 @@
         </RouterLink>
       </nav>
 
-      <div class="px-3 py-4 border-t border-white/10 space-y-0.5">
-        <a class="nav-foot" href="https://github.com/jeanhua/AniaBot" target="_blank" rel="noopener noreferrer">
-          <span v-html="icons.github" class="[&>svg]:w-4 [&>svg]:h-4" /> GitHub
+      <div class="px-4 py-4 border-t border-white/10 flex items-center justify-between">
+        <a class="nav-ico" href="https://github.com/jeanhua/AniaBot" target="_blank" rel="noopener noreferrer" aria-label="GitHub 仓库">
+          <span v-html="icons.github" class="[&>svg]:w-4 [&>svg]:h-4" />
+          <span class="tip">GitHub</span>
         </a>
-        <button class="nav-foot" @click="onRestart">
-          <span v-html="icons.restart" class="[&>svg]:w-4 [&>svg]:h-4" /> 重启 Bot
+        <button class="nav-ico" @click="onRestart" aria-label="重启 Bot">
+          <span v-html="icons.restart" class="[&>svg]:w-4 [&>svg]:h-4" />
+          <span class="tip">重启 Bot</span>
         </button>
-        <button class="nav-foot" @click="showPwd = true">
-          <span v-html="icons.key" class="[&>svg]:w-4 [&>svg]:h-4" /> 修改密码
+        <button class="nav-ico" @click="showPwd = true" aria-label="修改密码">
+          <span v-html="icons.key" class="[&>svg]:w-4 [&>svg]:h-4" />
+          <span class="tip">修改密码</span>
         </button>
-        <button class="nav-foot hover:text-red-300!" @click="onLogout">
-          <span v-html="icons.logout" class="[&>svg]:w-4 [&>svg]:h-4" /> 退出登录
+        <button class="nav-ico hover:text-red-300!" @click="onLogout" aria-label="退出登录">
+          <span v-html="icons.logout" class="[&>svg]:w-4 [&>svg]:h-4" />
+          <span class="tip">退出登录</span>
         </button>
       </div>
     </aside>
@@ -122,6 +126,7 @@ const icons = {
   gauge: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5 10.5 19.5l3.75-3.75m4.125-9.75L12 12m0 0a2.25 2.25 0 1 0 0-4.5 2.25 2.25 0 0 0 0 4.5Zm3.75-3 4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>',
   task: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5M12 12.75v3M10.5 14.25h3"/></svg>',
   update: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3V15"/></svg>',
+  store: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 21v-7.5a.75.75 0 0 1 .75-.75h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349M3.75 21V9.349m0 0a3.001 3.001 0 0 0 3.75-.615A2.993 2.993 0 0 0 9.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.015a3.001 3.001 0 0 0 3.75.614m-16.5 0a3.004 3.004 0 0 1-.621-4.72l1.189-1.19A1.5 1.5 0 0 1 5.378 3h13.243a1.5 1.5 0 0 1 1.06.44l1.19 1.189a3 3 0 0 1-.621 4.72M6.75 18h3.75a.75.75 0 0 0 .75-.75V13.5a.75.75 0 0 0-.75-.75H6.75a.75.75 0 0 0-.75.75v3.75c0 .414.336.75.75.75Z"/></svg>',
   restart: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>',
   key: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"/></svg>',
   logout: '<svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"/></svg>',
@@ -143,6 +148,7 @@ const navItems = [
   { to: '/config', label: '配置管理', icon: icons.config },
   { to: '/files', label: '扩展配置', icon: icons.files },
   { to: '/contacts', label: '通讯录', icon: icons.contacts },
+  { to: '/marketplace', label: '插件市场', icon: icons.store },
   { to: '/update', label: '自动更新', icon: icons.update },
 ]
 
@@ -191,21 +197,42 @@ async function onChangePwd() {
 </script>
 
 <style scoped>
-.nav-foot {
+/* 侧边栏底部小按钮（图标 + hover 提示） */
+.nav-ico {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  width: 100%;
-  padding: 0.5rem 0.75rem;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
   border-radius: 0.375rem;
-  font-size: 11px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
   color: rgb(113 113 122);
-  transition: all 0.15s;
+  transition: color 0.15s, background-color 0.15s;
 }
-.nav-foot:hover {
+.nav-ico:hover {
   color: rgb(228 228 231);
-  background: rgb(255 255 255 / 0.05);
+  background: rgb(255 255 255 / 0.08);
+}
+.nav-ico .tip {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 50%;
+  z-index: 20;
+  padding: 0.3rem 0.55rem;
+  border-radius: 0.375rem;
+  background: rgb(39 39 42);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  color: rgb(228 228 231);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(3px);
+  transition: opacity 0.15s, transform 0.15s;
+}
+.nav-ico:hover .tip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 </style>

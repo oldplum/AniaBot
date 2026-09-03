@@ -14,6 +14,7 @@
 - **插件驱动**：功能模块化，易于扩展和维护
 - **多平台**：QQ（NapCat WebSocket/HTTP，OneBot v11）+ 飞书（官方 SDK 长连接/Webhook）+ Telegram（Bot API 长轮询，无需公网地址）+ Discord（discordgo，Gateway WebSocket，无需公网地址）等；新增平台只需实现一个适配器并注册，框架核心零改动
 - **开箱即用**：内置 AI 对话（含 MCP/Skills/Tool Use）、防撤回、复读机等插件
+- **插件市场**：独立插件仓库（AniaBot-Plugins）支持 PR 提交插件，面板「插件市场」可浏览插件介绍、在线安装/升级/卸载并自动编译重启（容器内开箱即用）
 
 ![framework](./README/framework.png)
 
@@ -68,6 +69,14 @@ docker run -d --name aniabot \
 ```
 
 详细配置和插件开发教程请查阅 **[文档站点](https://jeanhua.github.io/AniaBot/)**。
+
+## 插件市场
+
+AniaBot 内置插件市场：面板「插件市场」页可浏览、在线安装 / 升级 / 卸载第三方插件（自动下载源码 → 编译 → 重启，容器内开箱即用）。
+
+- **插件仓库**：[github.com/jeanhua/AniaBot-Plugins](https://github.com/jeanhua/AniaBot-Plugins) —— 官方插件市场，通过 PR 提交自己的插件（插件代码 + plugin.json 元信息 + README 介绍）
+- **使用指南**：[插件市场使用文档](https://jeanhua.github.io/AniaBot/guide/plugin-marketplace)
+- **开发自己的插件**：[插件开发文档](https://jeanhua.github.io/AniaBot/plugin/overview)，写好后到插件仓库提交 PR 即可发布
 
 ## 许可证
 

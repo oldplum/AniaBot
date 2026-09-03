@@ -20,6 +20,7 @@ import (
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginnews"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginrepeat"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginsys"
+	"github.com/jeanhua/AniaBot/bot/plugins/pluginwhitelist"
 )
 
 var setPassword = flag.String("set-password", "", "重置 Web 控制面板密码后退出（忘记密码时使用），如：-set-password 新密码")
@@ -41,6 +42,9 @@ func main() {
 	// 插件注册
 	bot.AddPlugin(pluginsys.NewPluginSys())
 	bot.AddPlugin(pluginlog.NewPlugin())
+	// 白名单管理需早于全部功能插件：block_all 开启时非白名单会话的消息
+	// 到不了任何功能插件（但仍晚于 pluginsys，管理员的系统命令不受影响）
+	bot.AddPlugin(pluginwhitelist.NewPlugin())
 	bot.AddPlugin(plugininterceptor.NewPlugin())
 
 	bot.AddPlugin(pluginrepeat.NewPlugin())
@@ -48,6 +52,9 @@ func main() {
 	bot.AddPlugin(pluginnews.NewNewsPlugin())
 	bot.AddPlugin(pluginaichat.NewAIChatPlugin())
 	bot.AddPlugin(plugineew.NewPlugin())
+
+	// 插件市场安装的第三方插件（由 tools/plugingen 生成注册代码）
+	registerMarketplacePlugins(bot)
 
 	bot.Run()
 }
