@@ -3,24 +3,24 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 
 export default withMermaid(defineConfig({
   title: 'AniaBot',
-  description: '一个插件驱动型多平台（QQ / 飞书 / Telegram / Discord）机器人框架 —— Go 语言开发，内置 AI 对话 / MCP / 定时任务',
+  description: '一个插件驱动型多平台（QQ / 飞书 / Telegram / Discord / 微信）机器人框架 —— Go 语言开发，内置 AI 对话 / MCP / 定时任务',
   lang: 'zh-CN',
   base: '/AniaBot/',
   cleanUrls: true,
   lastUpdated: true,
 
   head: [
-    ['link', { rel: 'icon', href: '/AniaBot/logo.png' }],
+    ['link', { rel: 'icon', type: 'image/webp', href: '/AniaBot/logo.webp' }],
     ['meta', { name: 'theme-color', content: '#e8547f' }],
     ['meta', { name: 'og:title', content: 'AniaBot 文档' }],
-    ['meta', { name: 'og:description', content: '插件驱动型多平台（QQ / 飞书 / Telegram / Discord）机器人框架' }],
+    ['meta', { name: 'og:description', content: '插件驱动型多平台（QQ / 飞书 / Telegram / Discord / 微信）机器人框架' }],
   ],
   markdown: {
     lineNumbers: true,
   },
 
   themeConfig: {
-    logo: '/logo.png',
+    logo: '/logo.webp',
     siteTitle: 'AniaBot',
 
     nav: [
@@ -159,3 +159,4 @@ export default withMermaid(defineConfig({
     returnToTopLabel: '返回顶部',
   },
 }))
+

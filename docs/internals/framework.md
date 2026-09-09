@@ -65,7 +65,7 @@ type QID string // 提供 String() / Uint64()
 ```
 
 - **QQ 统一带 `qq:` 前缀**：旧版裸数字数据在启动时自动迁移，未迁移的裸数字 ID 仍兼容回退到 QQ
-- 其他平台统一带前缀：QQ 官方 `qo:`、飞书 `fs:`、Telegram `tg:`（消息 ID 为 `tg:<chat_id>:<message_id>`）、Discord `dc:<channel_id>:<message_id>`
+- 其他平台统一带前缀：QQ 官方 `qo:`、飞书 `fs:`、Telegram `tg:`（消息 ID 为 `tg:<chat_id>:<message_id>`）、Discord `dc:<channel_id>:<message_id>`、微信 `wx:`（消息 ID 为 `wx:<用户ID>:<message_id>`）
 - 前缀在适配器的 `Definition.IDPrefix` 中声明，注册时**重复前缀直接 panic**（启动期编程错误）
 
 ### 3. 能力分层：公共接口 + 可选接口
@@ -87,11 +87,17 @@ flowchart TB
     subgraph Stream[流式 · bot.StreamSender]
         S1[SendGroupStream / SendFriendStream<br/>先发后改]
     end
+    subgraph Interactive[交互 · bot.Interactive / bot.MsgEditor]
+        I1[keyboard 段按钮 + 点击回调<br/>编辑已发出消息（就地翻页）]
+    end
     Base --- QQ
     Base --- Stream
+    Base --- Interactive
 ```
 
-- 适配器侧对应 `adapter.QQExt` / `adapter.StreamSenderExt` 等可选接口
+- 适配器侧对应 `adapter.QQExt` / `adapter.StreamSenderExt` / `adapter.InteractiveExt` /
+  `adapter.MsgEditorExt`（内联按钮与消息编辑，Telegram 实现；交互应答走 `adapter.InteractionAnswerer`，
+  点击经 `TriggerWrapper.OnInteraction` 进 core 按「插件名:载荷」前缀路由）等可选接口
 - `adapter.WrapBot(base, src)` 按事件来源适配器把公共 `bot.Bot` 包装成带专属能力的扩展外观
 - 插件侧 `if qb, ok := b.(bot.QQ); ok` 类型断言探测，断言失败即平台不支持，优雅退化
 
@@ -412,6 +418,7 @@ type StreamHandle interface {
 | 飞书 | lark SDK 长连接 / Webhook | `larkws.NewClient(...).Start()` 阻塞，断线重连与心跳由 SDK 内部维护，适配器只挂状态回调；webhook 模式用独立 mux + 事件处理器（verification token / encrypt key 验签解密） |
 | Telegram | Bot API 长轮询 | `getMe` 校验 token（指数退避无限重试）→ `getUpdates(offset, timeout=30s)` 循环；**先 claim 后处理**：同步按 `update_id` 去重并推进 offset（重推也要推进，否则死循环重推），已 claim 的更新 `go` 异步翻译分发，翻译/图片下载不阻塞轮询；Bot API 没有消息查询/历史端点，`GetMsgDetail`/历史用适配器内存 `msgCache` 兜底 |
 | Discord | discordgo Gateway | Gateway WebSocket 收事件，心跳/断线重连/会话 resume 由库内部维护，`newSession` 失败指数退避无限重试；intents 订阅按配置声明 |
+| 微信 | iLink bot HTTP | `getupdates` HTTP 长轮询（游标 `get_updates_buf` 落盘断点续传），媒体经微信 CDN 中转（AES-128-ECB 端侧加解密）；登录凭据由控制台扫码获得并持久化，`errcode -14` 凭证失效时自动重进扫码流程 |
 
 共性设计：
 

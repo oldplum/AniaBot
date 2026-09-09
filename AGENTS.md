@@ -4,16 +4,16 @@ This file provides guidance to Agents when working with code in this repository.
 
 ## Project Overview
 
-AniaBot is a plugin-driven multi-platform bot framework built with Go. It connects to platforms via pluggable adapters — QQ through NapCat (WebSocket or HTTP adapter using the OneBot v11 protocol), QQ Official through the QQ Open Platform API v2 (WebSocket gateway + REST OpenAPI, hand-rolled resty/gorilla client), Feishu/Lark through the official oapi-sdk-go (WebSocket long-connection or webhook), Telegram through the Bot API (long polling, hand-rolled resty client), Discord through bwmarrin/discordgo (Gateway WebSocket + REST) — and features an AI chat engine supporting three LLM API formats (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages) with tool calling, MCP (Model Context Protocol) integration, and a skill system.
+AniaBot is a plugin-driven multi-platform bot framework built with Go. It connects to platforms via pluggable adapters — QQ through NapCat (WebSocket or HTTP adapter using the OneBot v11 protocol), QQ Official through the QQ Open Platform API v2 (WebSocket gateway + REST OpenAPI, hand-rolled resty/gorilla client), Feishu/Lark through the official oapi-sdk-go (WebSocket long-connection or webhook), Telegram through the Bot API (long polling, hand-rolled resty client), Discord through bwmarrin/discordgo (Gateway WebSocket + REST), WeChat through the iLink bot HTTP long-polling API (QR-code login, CDN media with AES-128-ECB, protocol reference: Tencent's open-source openclaw-weixin) — and features an AI chat engine supporting three LLM API formats (OpenAI Chat Completions / OpenAI Responses / Anthropic Messages) with tool calling, MCP (Model Context Protocol) integration, and a skill system.
 
-**Multi-platform model**: the framework normalizes every platform to the OneBot v11 segment format (`OB11Segment{Type, Data}`) as its canonical message shape — adapters translate at the boundary (inbound: platform event → segments; outbound: segments → platform API). IDs are platform-prefixed (`qo:<openid>` for QQ Official, `fs:oc_xxx` for Feishu, `tg:<chat_id>:<message_id>` for Telegram messages, `dc:<channel_id>:<message_id>` for Discord messages); QQ legacy numeric IDs carry no prefix and route to the default adapter. Platform-specific capabilities are exposed via optional interfaces (`adapter.QQExt` / plugin-facing `bot.QQ`; `adapter.ContactsExt` backs the panel's multi-platform address book) — plugins type-assert to probe them, so a plugin written for QQ degrades gracefully on other platforms. Adding a platform = a new adapter package + one blank import in `cmd/main.go`; the core is untouched.
+**Multi-platform model**: the framework normalizes every platform to the OneBot v11 segment format (`OB11Segment{Type, Data}`) as its canonical message shape — adapters translate at the boundary (inbound: platform event → segments; outbound: segments → platform API). IDs are platform-prefixed (`qo:<openid>` for QQ Official, `fs:oc_xxx` for Feishu, `tg:<chat_id>:<message_id>` for Telegram messages, `dc:<channel_id>:<message_id>` for Discord messages, `wx:<user_id>:<message_id>` for WeChat messages); QQ legacy numeric IDs carry no prefix and route to the default adapter. Platform-specific capabilities are exposed via optional interfaces (`adapter.QQExt` / plugin-facing `bot.QQ`; `adapter.ContactsExt` backs the panel's multi-platform address book) — plugins type-assert to probe them, so a plugin written for QQ degrades gracefully on other platforms. Adding a platform = a new adapter package + one blank import in `cmd/main.go`; the core is untouched.
 
 ## Commands
 
 ### Run
 
 ```bash
-go run cmd/main.go
+go run ./cmd    # 不能用 go run cmd/main.go：cmd 下有插件市场生成的注册文件，单文件运行会编译失败
 ```
 
 ### Build (cross-compile)
@@ -78,13 +78,14 @@ bot/adapter/qqofficial/  QQ Official adapter (QQ Open Platform API v2: WebSocket
 bot/adapter/feishu/      Feishu/Lark adapter (larksuite/oapi-sdk-go/v3), WebSocket long-connection + webhook
 bot/adapter/telegram/    Telegram adapter (hand-rolled Bot API client, long polling; proxy/api_base config)
 bot/adapter/discord/     Discord adapter (bwmarrin/discordgo, Gateway WebSocket; proxy config)
+bot/adapter/weixin/      WeChat adapter (iLink bot HTTP long-poll; QR login via panel QRLoginSource API or console, credentials in ./data/weixin, CDN media)
 bot/component/           AI chat engine
   aichat/                  ChatBot, LLMClient, MessageBuilder, ToolOrchestrator, messageWindow
   llmtool/                 Tool interface, ToolExecuter, MCP client, SkillManager, schema parser
   functool/                Built-in tools (time, web search, file, msg history, image loading, config get/set)
   oplog/                   Operation audit log (panel + AI tool actions; SQL ania_op_log / KV dual backend, package-level singleton)
   sysrestart/              Process self-restart (panel restart/auto-update + /reboot command in pluginsys)
-bot/plugins/             Seven built-in plugins (sys, log, repeat, antiwithdrawal, interceptor, aichat, news)
+bot/plugins/             Six built-in plugins (sys, log, repeat, interceptor, aichat, news)
 bot/utils/               Command parsing, message extraction, URL helpers, time formatting
 custom/                  User-created plugin examples and templates
 web/                     Admin panel frontend (Vite + Vue 3 + Tailwind v4, builds into bot/adminpanel/dist)
@@ -94,7 +95,8 @@ docs/                    VitePress documentation site
 ### Dependency Flow (strictly top-down)
 
 ```
-cmd/main.go → bot/core, bot/adapter/napcat, bot/adapter/qqofficial, bot/adapter/feishu, bot/adapter/telegram, bot/adapter/discord, bot/plugins/*
+cmd/main.go → bot/core, bot/adapter/napcat, bot/adapter/qqofficial, bot/adapter/feishu, bot/adapter/telegram, bot/adapter/discord, bot/adapter/weixin, bot/plugins/*
+bot/adapter/weixin → common/adapter, common/bot, common/model/message, common/msgchain, external (resty, go-qrcode)
 bot/core → common/*, bot/utils
 bot/adapter/napcat → common/adapter, common/bot, common/model/message, common/msgchain
 bot/adapter/qqofficial → common/adapter, common/bot, common/model/message, common/msgchain, external (resty, gorilla/websocket)
@@ -141,7 +143,7 @@ Each user session gets a `SessionToolExecutor` with isolated dynamic tools. MCP 
 
 - `LLMClient` is a thin shell around pluggable per-format backends (`llmBackend` interface in `llmbackend.go`): `chat_completions` (OpenAI-compatible, via `openai-go/v3`), `responses` (OpenAI Responses API, same SDK's `responses` package), and `anthropic` (Anthropic Messages API via `anthropics/anthropic-sdk-go`). The shell owns app-level retry and fallback-model switching; each backend owns message conversion, tool defs, streaming accumulation, and usage mapping. Format is selected per client via `WithAPIFormat` (plugin config `api_format` on the main/subagent/compressor/fallback model configs, empty sub-config values inherit the main format). Anthropic extended thinking is supported end-to-end: `thinking.mode` maps to `budget_tokens`, and thinking blocks (with signature / redacted data) are persisted on `Message.ThinkingBlocks` and replayed verbatim across tool-calling turns, as the API requires. DeepSeek-style `reasoning_content` is still extracted on the chat-completions format. Prompt caching: `chat_completions`/`responses` rely on provider automatic prefix caching (system prompt must stay byte-stable), while `anthropic` needs explicit `cache_control` breakpoints — enabled by default via `plugin.ai_chat_bot.prompt_cache.enable`/`.ttl` (5m/1h), `aichat.WithPromptCache` sets breakpoints on the last system block and the last cacheable block (text/image/tool_result) of the last message; dynamic content (e.g. long-term memory injection) must be appended to the message tail, never to system, otherwise the whole prefix cache is invalidated
 - `MessageBuilder` constructs message arrays with system prompt, skill registry, chat history, tool results
-- `messageWindow` (in `memorywindow.go`) is a token-budget context window, not a fixed-turn slider: it records prompt-token usage and, once that exceeds 80% of `max_context_tokens`, compresses prior history via an LLM summarizer (`MaybeCompress` / `NewContextCompressor`). History is persisted across restarts via an injected `HistoryStore` (namespaced per group/friend) with `Load`/`Append`/`Replace`/`Clear` semantics: plain appends sync **incrementally** (only new messages), compression/truncation rewrites the whole window (`Replace`), `clear` wipes it — all with a background context; `ChatBot.LoadHistory` replays on session creation. On SQL backends (probed via `storage.SQLBackend`, see Storage below) the store is row-level: `ania_chat_session` (one row per session, `msg_count` doubles as the seq allocator) + `ania_chat_message` (one row per message, `(session_id, seq)` PK, no FK), so appends only INSERT new rows; non-SQL backends fall back to a whole-array JSON blob in KV. On replay, remote http(s) image URLs (QQ temp links that expire) are degraded to a text marker, while `data:` URIs (local images) are preserved.
+- `messageWindow` (in `memorywindow.go`) is a token-budget context window, not a fixed-turn slider: it records prompt-token usage and, once that exceeds 80% of `max_context_tokens`, compresses prior history via an LLM summarizer (`MaybeCompress` / `NewContextCompressor`). History is persisted across restarts via an injected `HistoryStore` (namespaced per group/friend) with `Load`/`Append`/`Replace`/`Clear` semantics: plain appends sync **incrementally** (only new messages), compression/truncation rewrites the whole window (`Replace`), `clear` wipes it — all with a background context; `ChatBot.LoadHistory` replays on session creation. On SQL backends (probed via `storage.SQLBackend`, see Storage below) the store is row-level: `ania_chat_session` (one row per session, `msg_count` doubles as the seq allocator) + `ania_chat_message` (one row per message, `(session_id, seq)` PK, no FK), so appends only INSERT new rows; non-SQL backends fall back to a whole-array JSON blob in KV. Image parts (remote http(s) URLs and `data:` URIs alike) are degraded to `[图片 <hash>]` text markers before persist (base64 data URIs are MB-scale and would bloat the store), so history replays as text-only.
 - **Session cache reclamation** — `pluginaichat` keeps per-session `ChatBot` instances in a `sync.Map` of `chatEntry` (chat + last-active timestamp). A janitor (`chatcache.go`, 1-minute tick) evicts entries idle longer than `plugin.ai_chat_bot.session.max_idle_minutes` (default 120, 0 disables) and enforces an LRU cap of `session.max_sessions` (default 128, 0 disables), so memory no longer grows linearly with lifetime session count. Eviction probes the session lock (sessions mid-response are skipped) and re-checks the pending queue under the lock before `CompareAndDelete`; only the in-memory object is dropped — persisted history reloads on the next message (side effect: tools dynamically loaded via `mcp_load` die with the entry, same as a restart). Only AI-directed messages refresh activity (un-@'d group chatter does not).
 - `ToolOrchestrator` runs the multi-turn agent loop: LLM → tool call → result → LLM (up to `maxIterations`, built-in default 20). Main chats and clock-triggered chats get it from `plugin.ai_chat_bot.max_iterations` via `ChatBot.SetMaxIterations`
 - `CallBackFuncs` bridges tool execution back to QQ messaging (send text, image, file)
@@ -200,6 +202,7 @@ Four GitHub Actions workflows in `.github/workflows/`:
 | `modelcontextprotocol/go-sdk`    | MCP protocol client                        |
 | `gorilla/websocket`              | WebSocket for NapCat / QQ Official / Discord adapters |
 | `bwmarrin/discordgo`             | Discord adapter (Gateway WebSocket + REST)            |
+| `skip2/go-qrcode`                | WeChat adapter QR login (terminal QR rendering)       |
 | `go-resty/resty/v2`              | HTTP client                                |
 | `redis/go-redis/v9`              | Redis cache storage backend                |
 | `modernc.org/sqlite`             | Pure-Go SQLite, persistent storage default |

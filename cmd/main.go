@@ -11,16 +11,15 @@ import (
 	_ "github.com/jeanhua/AniaBot/bot/adapter/napcat"
 	_ "github.com/jeanhua/AniaBot/bot/adapter/qqofficial"
 	_ "github.com/jeanhua/AniaBot/bot/adapter/telegram"
+	_ "github.com/jeanhua/AniaBot/bot/adapter/weixin"
 	"github.com/jeanhua/AniaBot/bot/core"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginaichat"
-	"github.com/jeanhua/AniaBot/bot/plugins/pluginantiwithdrawal"
 	"github.com/jeanhua/AniaBot/bot/plugins/plugineew"
 	"github.com/jeanhua/AniaBot/bot/plugins/plugininterceptor"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginlog"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginnews"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginrepeat"
 	"github.com/jeanhua/AniaBot/bot/plugins/pluginsys"
-	"github.com/jeanhua/AniaBot/bot/plugins/pluginwhitelist"
 )
 
 var setPassword = flag.String("set-password", "", "重置 Web 控制面板密码后退出（忘记密码时使用），如：-set-password 新密码")
@@ -42,13 +41,11 @@ func main() {
 	// 插件注册
 	bot.AddPlugin(pluginsys.NewPluginSys())
 	bot.AddPlugin(pluginlog.NewPlugin())
-	// 白名单管理需早于全部功能插件：block_all 开启时非白名单会话的消息
-	// 到不了任何功能插件（但仍晚于 pluginsys，管理员的系统命令不受影响）
-	bot.AddPlugin(pluginwhitelist.NewPlugin())
+	// 白名单管理（/wl）不再是内置插件：需要命令行管理名单时从插件市场安装 whitelist，
+	// 其 Meta.Order 在日志之后、其余功能插件之前，保证「拦住全部插件」时最先拦截
 	bot.AddPlugin(plugininterceptor.NewPlugin())
 
 	bot.AddPlugin(pluginrepeat.NewPlugin())
-	bot.AddPlugin(pluginantiwithdrawal.NewPlugin())
 	bot.AddPlugin(pluginnews.NewNewsPlugin())
 	bot.AddPlugin(pluginaichat.NewAIChatPlugin())
 	bot.AddPlugin(plugineew.NewPlugin())

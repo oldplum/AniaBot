@@ -61,7 +61,7 @@ func NewPlugin() *DailyBriefPlugin {
 			ShowFor:   plugininfo.ShowForGroup,
 			Author:    "you",
 			Version:   "1.0.0",
-			// Platforms 留空 = 支持全部平台（QQ / 飞书 / Telegram / Discord）
+			// Platforms 留空 = 支持全部平台（QQ / 飞书 / Telegram / Discord / 微信）
 		},
 	}
 }
@@ -291,7 +291,7 @@ func main() {
 ```
 
 ```bash
-go run cmd/main.go
+go run ./cmd
 ```
 
 调试技巧：
@@ -306,7 +306,7 @@ go run cmd/main.go
 
 最终 `custom/plugins/plugindailybrief/plugin.go` 就是把上面各步骤的代码拼在一起（去掉重复的 import 与结构体定义）。项目内的完整参考实现：
 
-- 内置插件：`bot/plugins/` 下七个插件（AI 对话、防撤回、新闻……）
+- 内置插件：`bot/plugins/` 下六个插件（AI 对话、复读机、新闻……）
 - 简单示例与模板：`custom/mvp/example.go`、`custom/plugins/pluginexample/plugin.go`
 
 ## 下一步

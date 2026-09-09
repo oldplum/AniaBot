@@ -83,8 +83,11 @@ func (raw Message) FriendlyText(showUrl bool, opts ...MsgOptFunc) string {
 				} else {
 					if showUrl {
 						// 同时输出短哈希与 URL：哈希用于 load_images 按需加载，
-						// URL 供 AI 下载图片到本地（如 bash/file 工具）
-						if msg.Url != "" {
+						// URL 供 AI 下载图片到本地（如 bash/file 工具）。
+						// data URI（微信/飞书/Telegram/Discord 的内联图片）是 MB 级
+						// base64，写进标记会随消息文本进入 LLM 上下文与落盘历史，
+						// 只保留哈希（load_images 注册表仍持有完整 URI，按哈希可加载）
+						if msg.Url != "" && !strings.HasPrefix(msg.Url, "data:") {
 							result.WriteString(fmt.Sprintf("[图片 %s url:%s]", msg.Hash(), msg.Url))
 						} else {
 							result.WriteString(fmt.Sprintf("[图片 %s]", msg.Hash()))
@@ -151,15 +154,16 @@ func (raw Message) FriendlyText(showUrl bool, opts ...MsgOptFunc) string {
 				}
 			}
 		case SegmentForward:
-			if msgFuncs.getForwardMsgFunc != nil {
+			// NapCat 解析转发内容时会把（含嵌套的）内容内联在 content 字段里，
+			// 内层转发 id 仅供查看、无法再通过 get_forward_msg 拉取，因此优先展开内联内容；
+			// 无内联内容时再回退为按 id 拉取详情
+			if inline, ok := ParseForwardContent(s); ok {
+				writeForwardMessages(&result, inline, showUrl, msgFuncs)
+			} else if msgFuncs.getForwardMsgFunc != nil {
 				var msg ForwardMessage
 				if ok := ParseForward(s, &msg); ok {
 					if detail, ok := msgFuncs.getForwardMsgFunc(msg.Id); ok {
-						result.WriteString("\n<合并转发消息>")
-						for _, msg := range *detail {
-							result.WriteString(msg.FriendlyText(showUrl))
-						}
-						result.WriteString("</合并转发消息>\n")
+						writeForwardMessages(&result, *detail, showUrl, msgFuncs)
 					} else {
 						result.WriteString("[转发消息, 无法获取详情]")
 					}
@@ -201,4 +205,16 @@ func (raw Message) FriendlyText(showUrl bool, opts ...MsgOptFunc) string {
 		}
 	}
 	return result.String()
+}
+
+// writeForwardMessages 输出合并转发消息内容：逐条调用 FriendlyText 并透传
+// OCR/转发拉取回调，使内层嵌套合并转发也能继续递归展开。
+func writeForwardMessages(w *strings.Builder, msgs []Message, showUrl bool, msgFuncs msgHandleOpt) {
+	w.WriteString("\n<合并转发消息>")
+	for _, msg := range msgs {
+		w.WriteString(msg.FriendlyText(showUrl,
+			WithGetImageOCRFunc(msgFuncs.getImageOCRFunc),
+			WithGetForwardMsgFunc(msgFuncs.getForwardMsgFunc)))
+	}
+	w.WriteString("</合并转发消息>\n")
 }

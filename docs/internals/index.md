@@ -12,7 +12,7 @@
 AniaBot 的核心思想是**框架只做连接与分发，功能全是插件**：
 
 - 框架本体负责：连接平台适配器 → 把平台事件归一化为统一消息 → 沿插件链分发 → 把插件的发送请求路由回对应平台
-- AI 对话、防撤回、复读、新闻推送……所有功能都是插件，与用户自定义插件地位平等
+- AI 对话、复读机、每日新闻……所有功能都是插件，与用户自定义插件地位平等
 - 平台能力用「可选接口 + 类型断言」暴露：公共能力进 `bot.Bot`，平台专属能力进 `bot.QQ`，插件探测不到就优雅退化
 
 ```mermaid
@@ -23,6 +23,7 @@ flowchart LR
         F[飞书/Lark]
         T[Telegram]
         D[Discord]
+        W[微信 iLink Bot]
     end
     subgraph Adapters[适配器层 · 边界翻译]
         NA[NapCat 适配器]
@@ -30,6 +31,7 @@ flowchart LR
         FA[飞书适配器]
         TA[Telegram 适配器]
         DA[Discord 适配器]
+        WA[微信适配器]
     end
     subgraph Core[框架核心 bot/core]
         Route[ID 前缀路由]
@@ -54,11 +56,13 @@ flowchart LR
     F <--> FA
     T <--> TA
     D <--> DA
+    W <--> WA
     NA --> Route
     QA --> Route
     FA --> Route
     TA --> Route
     DA --> Route
+    WA --> Route
     Route --> Dispatch --> Chain
     Chain --> AI & Other
     AI --> LLM
