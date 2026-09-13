@@ -58,5 +58,5 @@ data/
 
 # custom plugin
 # 如果fork仓库保留自己的自定义插件，请把下面项删掉加入git管理
-custom/plugins
-!custom/plugins/pluginexample
+# custom/plugins
+# !custom/plugins/pluginexample

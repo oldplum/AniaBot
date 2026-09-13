@@ -9,11 +9,13 @@ package main
 import (
 	"github.com/jeanhua/AniaBot/bot/core"
 	plug_antiwithdrawal "github.com/jeanhua/AniaBot/custom/plugins/antiwithdrawal"
+	plug_groupdigest "github.com/jeanhua/AniaBot/custom/plugins/groupdigest"
 	plug_whitelist "github.com/jeanhua/AniaBot/custom/plugins/whitelist"
 )
 
 // registerMarketplacePlugins 注册插件市场安装的第三方插件。
 func registerMarketplacePlugins(ania *core.AniaBot) {
 	ania.AddPlugin(plug_antiwithdrawal.NewPlugin())
+	ania.AddPlugin(plug_groupdigest.NewPlugin())
 	ania.AddPlugin(plug_whitelist.NewPlugin())
 }
