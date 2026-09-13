@@ -4,8 +4,8 @@
       <div v-if="saved" class="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-xl px-4 py-3" v-html="savedHint" />
     </Transition>
 
-    <div class="flex items-center justify-between">
-      <div class="flex gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm overflow-x-auto">
         <button
           v-for="tab in tabs"
           :key="tab.name"
@@ -168,7 +168,7 @@
       <div
         v-if="showPromptEditor"
         class="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-        @click.self="closePromptEditor"
+        v-backdrop-close="closePromptEditor"
       >
         <form
           class="bg-white rounded-xl shadow-2xl border border-zinc-200 w-full max-w-4xl flex flex-col max-h-[92vh]"
