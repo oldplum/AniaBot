@@ -65,6 +65,7 @@ AniaBot 的全部配置存储在**数据库**中（持久化存储的 `ania_kv` 
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `bot.platform.napcat.enable` | `true` | 是否启用 QQ（NapCat）平台 |
+| `bot.platform.luckylilia.enable` | `false` | 是否启用 QQ（Luckylilia/LLBot）平台（需同时配置下方 `bot.luckylilia.*`；与 NapCat 可并存，ID 前缀为 `lil:`） |
 | `bot.platform.qqofficial.enable` | `false` | 是否启用 QQ 官方机器人平台（需同时配置下方 `bot.qqofficial.*`） |
 | `bot.platform.feishu.enable` | `false` | 是否启用飞书平台（需同时配置下方 `bot.feishu.*`） |
 | `bot.platform.telegram.enable` | `false` | 是否启用 Telegram 平台（需同时配置下方 `bot.telegram.*`） |
@@ -196,6 +197,35 @@ bot.adapter.http.target_url    = http://localhost:6680 # NapCat HTTP 服务端�
 HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP Client 地址改为 AniaBot 所在机器的内网 IP。
 :::
 
+### luckylilia —— QQ(Luckylilia/LLBot) 协议适配器
+
+接入 [Luckylilia（LLBot）](https://api.luckylillia.com/llms.txt) —— 一个与 NapCat 同类的 **OneBot v11** QQ 协议端。能力与 NapCat 适配器基本一致（文本/图片/合并转发/戳一戳/群签到/表情回应等），全部面向 QQ 插件生态的插件可直接生效。WebSocket 与 HTTP **二选一**，由配置键 `bot.luckylilia.mode`（`ws` / `http`）决定，在面板勾选启用 QQ（Luckylilia）并填写，**重启后生效**：
+
+::: code-group
+
+```text [WebSocket（推荐）]
+bot.platform.luckylilia.enable    = true                  # 启用平台
+bot.luckylilia.mode               = ws                    # 连接模式（默认）
+bot.luckylilia.token              # 若 LLBot 端设置了 Token 则填写（Authorization: Bearer 携带）
+bot.luckylilia.ws.address         = ws://localhost:3001   # LLBot WebSocket 正向服务地址
+bot.luckylilia.ws.worker_count    = 0                     # 事件处理线程数，0 = 按 CPU 自动调整
+bot.luckylilia.ws.worker_queue_size = 1024                # 消息队列长度，超出则丢弃
+```
+
+```text [HTTP]
+bot.platform.luckylilia.enable    = true                  # 启用平台
+bot.luckylilia.mode               = http                  # 连接模式
+bot.luckylilia.token              # 若 LLBot 端设置了 Token 则填写
+bot.luckylilia.http.listen_port   = 6689                  # 本地监听端口，接收 LLBot 事件上报
+bot.luckylilia.http.target_url    = http://localhost:6690 # LLBot HTTP 服务端地址
+```
+
+:::
+
+::: tip 与 NapCat 并存
+本平台的群号/好友号/消息 ID 统一带 `lil:` 前缀（NapCat 为 `qq:`），因此**两者可同时启用**（两个 QQ 账号各连一个协议端），消息互不串线；管理员等按 ID 判断的配置需填写带 `lil:` 前缀的 ID（如 `lil:123456`）。`nc_get_rkey`（防撤回依赖）为 NapCat 专属接口，LLBot 不支持时相关能力自动退化。
+:::
+
 ### store.cache —— 缓存存储
 
 | 配置键 | 默认值 | 说明 |
@@ -248,7 +278,7 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 | `plugin.ai_chat_bot.temperature` | `1.2` | 采样温度 |
 | `plugin.ai_chat_bot.top_p` | `0.9` | 核采样 |
 | `plugin.ai_chat_bot.top_k` | `100` | Top-K 采样 |
-| `plugin.ai_chat_bot.max_token` | `8192` | 单次回复最大 token |
+| `plugin.ai_chat_bot.max_token` | 未设置 | 单次回复最大输出 token；留空不传该参数，使用模型 API 最大输出上限（anthropic 格式必填，留空时按 8192 下发）。设得过低会把长内容（如 write_file 的参数）拦腰截断 |
 | `plugin.ai_chat_bot.thinking.enable` | `false` | 深度思考开关 |
 | `plugin.ai_chat_bot.thinking.mode` | `auto` | `none` / `low` / `medium` / `high` / `auto` |
 | `plugin.ai_chat_bot.prompt` | 内置场景化 system prompt，按工具场景选择并说明异常处理方式（完整默认值见 `bot/plugins/pluginaichat/config.go` 的 `defaultPrompt`） | 系统提示词（system prompt） |
@@ -310,6 +340,8 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 | `plugin.ai_chat_bot.bash.whitelist` | `[]` | 命中这些正则的命令直接放行；黑白名单都不命中（含均未配置）时经工具审批确认后执行 |
 | `plugin.ai_chat_bot.bash.blacklist` | `["config(\\.dev)?\\.(yaml|yml|json)", "^mkfs", "^shutdown", "^reboot"]` | 匹配这些正则的命令被禁止（优先于白名单） |
 | `plugin.ai_chat_bot.local_image.enable` | `false` | 允许 AI 读取宿主机本地图片 |
+| `plugin.ai_chat_bot.computer_use.enable` | `false` | 电脑操作工具：AI 可截图查看宿主机屏幕并控制鼠标键盘（`screenshot` / `mouse_click` / `mousemove` / `mouse_scroll` / `keyboard_type` / `keyboard_press` / `active_window` / `list_windows`）；仅支持 Windows 宿主机。可把 `mouse_click` 等加入 `approval.tools` 实现每次操作人工确认，所有操作写入操作审计日志 |
+| `plugin.ai_chat_bot.computer_use.max_width` | `1280` | 截图最大宽度（像素），超出时等比缩小以节省 token，`0` 表示不缩放 |
 
 ### 任务清单（todo）
 
@@ -322,7 +354,7 @@ HTTP 模式下 NapCat 向 `localhost` 上报会失败，请将 NapCat 的 HTTP C
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `plugin.ai_chat_bot.approval.enable` | `false` | 启用后下列工具执行前需人工确认（请求发送者或管理员回复「允许/拒绝」）；同时作为 bash 未列名命令的审批通道（关闭时 bash 未列名命令默认放行，只认黑名单）。配置修改类工具（`config_set`/`config_file_set`）恒需管理员审批（提示私聊发给管理员），与此开关无关 |
-| `plugin.ai_chat_bot.approval.tools` | `file` | 需审批的工具名（逗号分隔）；bash 有命令级黑白名单 + 审批三段式，无需列入；配置修改类工具恒需管理员审批，无需列入 |
+| `plugin.ai_chat_bot.approval.tools` | `file` | 需审批的工具名（逗号分隔）；bash 有命令级黑白名单 + 审批三段式，无需列入；配置修改类工具恒需管理员审批，无需列入。启用电脑操作工具后建议把 `mouse_click`、`keyboard_type` 等列入，实现每次操作人工确认 |
 | `plugin.ai_chat_bot.approval.timeout_sec` | `120` | 审批超时（秒），超时无回复自动拒绝；范围 10~240 |
 
 ### AI 钩子（hooks）

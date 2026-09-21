@@ -91,6 +91,17 @@ func TestPlanBlockedToolsAreRealToolNames(t *testing.T) {
 	names[functool.NewConfigFileSetTool(nil).Name()] = true
 	names[functool.NewConfigFileGetTool(nil).Name()] = true
 
+	// 文件读写工具组（与 Start 中按 file_tools.enable 注册的来源一致，此处只取名字）
+	for _, tool := range functool.NewFileTools(functool.FileToolsConfig{Enable: true}) {
+		names[tool.Name()] = true
+	}
+
+	// 电脑操作工具（与 Start 中按 computer_use.enable 注册的来源一致，
+	// 仅在 Windows 宿主机可用，此处只取名字）
+	for _, tool := range functool.NewComputerUseTools(functool.ComputerUseConfig{}) {
+		names[tool.Name()] = true
+	}
+
 	// 会话级工具（与 getChat/registerScopedTools 的注册来源一致）
 	collect(newMemoryTools(newTestMemoryManager(0), "g:1", ""))
 	collect(newKnowledgeTools(newTestKnowledgeManager(0), "g:1", ""))

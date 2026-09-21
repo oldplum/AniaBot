@@ -11,6 +11,7 @@ import (
 
 	"github.com/jeanhua/AniaBot/bot/component/agenthook"
 	"github.com/jeanhua/AniaBot/bot/component/aichat"
+	"github.com/jeanhua/AniaBot/bot/component/computeruse"
 	"github.com/jeanhua/AniaBot/bot/component/functool"
 	"github.com/jeanhua/AniaBot/bot/component/llmtool"
 	"github.com/jeanhua/AniaBot/bot/component/querylog"
@@ -33,7 +34,7 @@ type AIChatPlugin struct {
 	chats sync.Map
 
 	// historyDB 对话历史的 SQL 后端连接（Start 时探测建表成功才赋值）；
-	// nil 表示回退 KV 历史存储（history: 命名空间整段 JSON）
+	// nil 表示历史不持久化（仅内存窗口）
 	historyDB *sql.DB
 
 	lockStorage storage.Storage
@@ -126,6 +127,11 @@ type AIChatPlugin struct {
 	todoManager *todoManager
 	// approvalManager 工具审批管理器；为 nil 表示功能未启用
 	approvalManager *approvalManager
+
+	// platformSideEffects 平台注入工具中声明了副作用的工具名集合
+	//（aitool.SideEffector，注册时收集）：计划模式门禁的动态腿，与
+	// planBlockedTools 静态清单同等阻断；键为工具名
+	platformSideEffects sync.Map
 
 	// msgEventTimeout 框架级消息处理超时（bot.msg_event_timeout_sec，Start 时
 	// 从全量 viper 读取）：tryProcessPending 等后台触发的会话处理复用同一预算
@@ -394,14 +400,16 @@ func (p *AIChatPlugin) processChatBatch(ctx context.Context, b bot.Bot, id messa
 		}
 	}
 
-	// 请求级图片哈希→URL 注册表：当前消息、历史记录、合并转发中的图片都会登记，
-	// load_images 按哈希查找并只加载指定的图片
+	// 请求级图片哈希→URL 注册表：当前消息、历史消息记录、合并转发中的图片都会登记，
+	// load_images 按哈希查找并只加载指定的图片。注册表随请求上下文传递，
+	// 平台历史消息工具（aitool）执行时经它登记拉取到的历史消息图片
 	imageReg := newImageRegistry()
+	ctx = context.WithValue(ctx, imageRegistryKey{}, imageReg)
 	var msgFuncs llmtool.CallBackFuncs
 	if isGroup {
-		msgFuncs = MakeGroupCallback(b, id, lastMsg.Sender.UserId, p.Logger, imageReg)
+		msgFuncs = MakeGroupCallback(b, id, lastMsg.Sender.UserId, p.Logger)
 	} else {
-		msgFuncs = MakeFriendCallback(b, id, p.Logger, imageReg)
+		msgFuncs = MakeFriendCallback(b, id, p.Logger)
 	}
 	p.configureImageCallbacks(ctx, b, &msgFuncs, imageReg, func(u aichat.TokenUsage) {
 		// 备用图片识别（OCR）消耗：并入会话统计（finishQuery 取走）与配额
@@ -839,14 +847,18 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	}
 	p.skillsDir = skillsDir
 	bashConfig := functool.BashConfig{
-		Enable:    p.cfg.Bash.Enable,
-		Shell:     p.cfg.Bash.Shell,
-		Env:       p.cfg.Bash.Env,
-		Whitelist: p.cfg.Bash.Whitelist,
-		Blacklist: p.cfg.Bash.Blacklist,
+		Enable:     p.cfg.Bash.Enable,
+		Shell:      p.cfg.Bash.Shell,
+		Env:        p.cfg.Bash.Env,
+		Whitelist:  p.cfg.Bash.Whitelist,
+		Blacklist:  p.cfg.Bash.Blacklist,
+		WorkingDir: p.cfg.Bash.WorkingDir,
+		PersistCwd: p.cfg.Bash.PersistCwd,
+		TimeoutSec: p.cfg.Bash.TimeoutSec,
+		MaxOutput:  p.cfg.Bash.MaxOutput,
 	}
 	if bashConfig.Enable {
-		p.Logger.Info("已启用bash工具", "shell", bashConfig.Shell, "whitelist", bashConfig.Whitelist, "blacklist", bashConfig.Blacklist)
+		p.Logger.Info("已启用bash工具", "shell", bashConfig.Shell, "whitelist", bashConfig.Whitelist, "blacklist", bashConfig.Blacklist, "working_dir", bashConfig.WorkingDir, "persist_cwd", bashConfig.PersistCwd)
 	}
 	fileConfig := functool.FileConfig{Enable: p.cfg.File.Enable}
 	if fileConfig.Enable {
@@ -856,6 +868,10 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	if localImageConfig.Enable {
 		p.Logger.Info("已启用local_image工具（可读取宿主机本地图片供AI查看，请注意安全风险）")
 	}
+	fileToolsConfig := functool.FileToolsConfig{Enable: p.cfg.FileTools.Enable, Root: p.cfg.FileTools.Root}
+	if fileToolsConfig.Enable {
+		p.Logger.Info("已启用文件读写工具（read_file/write_file/edit_file/glob/grep，可读取与编辑宿主机文件，请注意安全风险）", "root", fileToolsConfig.Root)
+	}
 	var err error
 	p.toolExecutor, p.skillManager, err = functool.CreateToolsWithSkill(
 		p.cfg.Search.Token,
@@ -864,6 +880,7 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 		bashConfig,
 		fileConfig,
 		localImageConfig,
+		fileToolsConfig,
 		p.cfg.Skills,
 		p.cfg.MCP.LazyLoad,
 	)
@@ -883,6 +900,21 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 			p.Logger.Warn("配置管理工具不可用：配置中心未注入（持久化存储异常？）")
 		}
 	}
+
+	// 电脑操作工具（默认关闭）：AI 可截图查看宿主机屏幕并控制鼠标键盘，
+	// 仅 Windows 宿主机支持；截图回传复用 local_image 管线（多模态/OCR）
+	if p.cfg.ComputerUse.Enable {
+		if !computeruse.Available() {
+			p.Logger.Warn("电脑操作工具不可用：当前平台不支持（仅支持 Windows 宿主机）")
+		} else {
+			for _, tool := range functool.NewComputerUseTools(functool.ComputerUseConfig{
+				MaxWidth: p.cfg.ComputerUse.MaxWidth,
+			}) {
+				p.toolExecutor.Register(tool)
+			}
+			p.Logger.Info("已启用电脑操作工具（AI 可截图查看屏幕并控制宿主机鼠标键盘，请注意安全风险；可把 mouse_click 等加入审批工具列表实现逐次确认）")
+		}
+	}
 	p.Logger.Info("工具执行器初始化完成")
 
 	// AI 定时任务（clock）：AI / 用户动态管理的持久化定时任务，独立于框架 cron
@@ -897,7 +929,7 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 		}
 		maxLog := p.cfg.Clock.MaxLogEntries
 		if maxLog <= 0 {
-			maxLog = 500
+			maxLog = 20000
 		}
 		p.clockManager = newClockManager(p, time.Duration(defaultTimeoutSec)*time.Second, maxLog)
 		p.Logger.Info("已启用AI定时任务功能", "tasks", len(p.clockManager.List()), "default_timeout_sec", defaultTimeoutSec)
@@ -976,12 +1008,12 @@ func (p *AIChatPlugin) Start(ctx context.Context, cfg *viper.Viper) error {
 	// Query 日志：记录每次 AI 回复的完整执行过程（面板「Query 日志」页数据源）
 	p.initQueryLogger()
 
-	// 对话历史行级化：SQL 后端建表成功则按行存于 ania_chat_session/ania_chat_message
-	// （增量追加只插入新行，避免整段 JSON 反复全量重写）；探测或建表失败回退
-	// KV 历史存储（history: 命名空间整段 JSON），功能不缺失
+	// 对话历史行级化：按行存于 ania_chat_session/ania_chat_message
+	// （增量追加只插入新行，避免整段 JSON 反复全量重写）；探测或建表失败时
+	// historyDB 保持 nil，历史仅存于内存窗口（重启丢失），不影响对话
 	if db, dialect, ok := storage.SQLBackend(p.PersistentStorage); ok {
 		if err := storage.EnsureTables(ctx, db, dialect, chatHistoryTables...); err != nil {
-			p.Logger.Error("创建对话历史表失败，回退 KV 历史存储", "error", err.Error())
+			p.Logger.Error("创建对话历史表失败，历史将不持久化", "error", err.Error())
 		} else {
 			p.historyDB = db
 			p.Logger.Info("对话历史使用行级存储", "dialect", dialect)
