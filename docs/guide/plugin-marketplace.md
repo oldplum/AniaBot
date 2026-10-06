@@ -1,6 +1,6 @@
 # 插件市场
 
-AniaBot 提供插件市场：从独立的官方插件仓库（[jeanhua/AniaBot-Plugins](https://github.com/jeanhua/AniaBot-Plugins)）浏览插件介绍，并在面板上**在线安装 / 升级 / 卸载**第三方插件。安装会自动下载插件源码、生成注册代码、重新编译并重启 Bot。
+AniaBot 提供插件市场：从独立的官方插件仓库（[AniaBot-Project/AniaBot-Plugins](https://github.com/AniaBot-Project/AniaBot-Plugins)）浏览插件介绍，并在面板上**在线安装 / 升级 / 卸载**第三方插件。安装会自动下载插件源码、生成注册代码、重新编译并重启 Bot。
 
 > ⚠️ **安全提示**：安装插件等于在 Bot 所在机器上编译并执行插件代码（与 Bot 同进程）。请只安装你信任的插件。市场仓库的插件经过维护者人工审查，但无法保证第三方依赖与未来版本绝对安全。插件市场默认关闭。
 
@@ -47,8 +47,20 @@ GitHub API 未登录限流 60 次/小时，登录后可提升到 5000 次/小时
 ### 升级 / 卸载 / 回滚
 
 - **升级**：插件卡片显示「可更新」时点击「升级」（安装到指定 commit，可复现）
-- **卸载**：已安装插件点击「卸载」，重新编译并重启后移除
+- **卸载**：已安装插件点击「卸载」，重新编译并重启后移除；实现了 `plugin.UnloadEvent` 接口的插件会在重启前收到 `OnUnload` 回调（`reason=uninstall`），可借此清理自身数据
 - **回滚**：任何安装/卸载操作前都会备份旧二进制（`<exe>.old`），出问题可点击「回滚上次安装」恢复
+
+### 批量安装 / 卸载
+
+逐个操作每个插件都要重新编译并重启一次，装多个插件时非常慢。插件列表支持多选批量操作：
+
+1. 勾选插件卡片左上角的复选框（或点列表上方的「全选当前列表」按当前筛选全选）
+2. 悬浮的批量操作栏会显示选中数量与可用操作：
+   - **安装/升级 N 个**：对选中项中未安装的执行安装、可更新的执行升级
+   - **卸载 N 个**：对选中项中已安装且为最新版本的执行卸载
+3. 确认后进入流水线：先统一下载并校验全部插件，再共用**一次**生成注册代码、拉取依赖、编译与重启，整体耗时接近装一个插件
+
+批量操作与单个操作使用同一套校验（插件 ID 必须合法、单次最多 50 个、同一插件不能同时出现在安装与卸载列表中），失败时会整体回滚到操作前的状态。
 
 ### 自动更新与容器重建
 
@@ -60,7 +72,7 @@ GitHub API 未登录限流 60 次/小时，登录后可提升到 5000 次/小时
 | 配置键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `bot.marketplace.enable` | `false` | 是否启用插件市场 |
-| `bot.marketplace.repo` | `jeanhua/AniaBot-Plugins` | 插件仓库 owner/repo |
+| `bot.marketplace.repo` | `AniaBot-Project/AniaBot-Plugins` | 插件仓库 owner/repo |
 | `bot.marketplace.branch` | `main` | 插件仓库分支 |
 | `bot.marketplace.source_dir` | 空 | 编译用源码目录，留空回退 `bot.update.source_dir` |
 | `bot.marketplace.plugin_dir` | `./data/plugins` | 已安装插件持久副本目录 |
@@ -69,7 +81,7 @@ GitHub API 未登录限流 60 次/小时，登录后可提升到 5000 次/小时
 
 ## 提交自己的插件
 
-插件市场是独立仓库 [jeanhua/AniaBot-Plugins](https://github.com/jeanhua/AniaBot-Plugins)，通过 Pull Request 提交：
+插件市场是独立仓库 [AniaBot-Project/AniaBot-Plugins](https://github.com/AniaBot-Project/AniaBot-Plugins)，通过 Pull Request 提交：
 
 1. Fork 仓库，在 `plugins/<id>/` 下创建插件（`plugin.json` + `README.md` + Go 源码），规范见仓库内 `docs/plugin-spec.md`
 2. 本地校验 `bash scripts/validate.sh`，或直接依赖 CI
@@ -79,8 +91,8 @@ GitHub API 未登录限流 60 次/小时，登录后可提升到 5000 次/小时
 
 ## 相关链接
 
-- [插件仓库 jeanhua/AniaBot-Plugins](https://github.com/jeanhua/AniaBot-Plugins) —— 浏览插件源码、提交 PR 发布自己的插件
-- [插件规范（plugin.json）](https://github.com/jeanhua/AniaBot-Plugins/blob/main/docs/plugin-spec.md)
-- [贡献指南（CONTRIBUTING）](https://github.com/jeanhua/AniaBot-Plugins/blob/main/CONTRIBUTING.md)
+- [插件仓库 AniaBot-Project/AniaBot-Plugins](https://github.com/AniaBot-Project/AniaBot-Plugins) —— 浏览插件源码、提交 PR 发布自己的插件
+- [插件规范（plugin.json）](https://github.com/AniaBot-Project/AniaBot-Plugins/blob/main/docs/plugin-spec.md)
+- [贡献指南（CONTRIBUTING）](https://github.com/AniaBot-Project/AniaBot-Plugins/blob/main/CONTRIBUTING.md)
 - [插件系统概览](/plugin/overview) —— 插件开发入门
 

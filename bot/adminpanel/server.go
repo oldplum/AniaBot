@@ -303,6 +303,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/marketplace/plugins/{id}", s.requireAuth(http.HandlerFunc(s.handleMarketplaceDetail)))
 	s.mux.Handle("POST /api/marketplace/install", s.requireAuth(http.HandlerFunc(s.handleMarketplaceInstall)))
 	s.mux.Handle("POST /api/marketplace/uninstall", s.requireAuth(http.HandlerFunc(s.handleMarketplaceUninstall)))
+	s.mux.Handle("POST /api/marketplace/batch", s.requireAuth(http.HandlerFunc(s.handleMarketplaceBatch)))
 	s.mux.Handle("POST /api/marketplace/rollback", s.requireAuth(http.HandlerFunc(s.handleMarketplaceRollback)))
 	s.mux.Handle("GET /api/marketplace/status", s.requireAuth(http.HandlerFunc(s.handleMarketplaceStatus)))
 	s.mux.Handle("POST /api/marketplace/oauth/start", s.requireAuth(http.HandlerFunc(s.handleMarketplaceOAuthStart)))
@@ -325,6 +326,13 @@ func (s *Server) spaHandler() http.Handler {
 		}
 		if _, err := fs.Stat(sub, path); err != nil {
 			r.URL.Path = "/"
+			path = "index.html"
+		}
+		// 带内容哈希的资源可长缓存；index.html 必须每次回源校验，否则前端更新后用户仍加载旧版本
+		if path == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=604800")
 		}
 		fileServer.ServeHTTP(w, r)
 	})
